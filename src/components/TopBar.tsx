@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { RiverbendLogo, IconMenu, IconClose } from "./icons";
+import { useContent } from "../admin/store";
 
 const navLinks = [
   { label: "Contact", href: "#contact" },
@@ -9,6 +10,7 @@ const navLinks = [
 ];
 
 export default function TopBar({ onNavigate }: { onNavigate: (id: string) => void }) {
+  const { content } = useContent();
   const [scrolled, setScrolled] = useState(false);
   const [open, setOpen] = useState(false);
 
@@ -39,7 +41,7 @@ export default function TopBar({ onNavigate }: { onNavigate: (id: string) => voi
         >
           <RiverbendLogo className="h-7 w-7" />
           <span className="text-lg font-semibold tracking-tight text-slate-900">
-            RIVERBEND
+            {content.brand.name}
           </span>
         </button>
 

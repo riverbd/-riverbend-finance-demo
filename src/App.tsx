@@ -105,7 +105,7 @@ function AdminGate(): ReactNode {
 }
 
 function AccountGate({ active }: { active: PageId }): ReactNode {
-  const { user, signOut } = useAuth();
+  const { user, loading, error, signOut } = useAuth();
   const [dashPage, setDashPage] = useState<DashPage>(
     (active as DashPage) ?? "dashboard"
   );
@@ -123,14 +123,32 @@ function AccountGate({ active }: { active: PageId }): ReactNode {
     }
   }, [active]);
 
+  // While the saved session is being re-validated against Supabase, do not
+  // bounce to the login screen — that would look like a random sign-out.
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50">
+        <div className="flex flex-col items-center gap-3">
+          <span className="h-8 w-8 animate-spin rounded-full border-2 border-river-200 border-t-river-700" />
+          <p className="text-sm text-slate-500">Loading your accounts…</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!user) {
-    if (window.location.hash !== "#login") {
-      window.location.hash = "login";
-    }
     return (
       <div className="min-h-screen bg-white text-slate-900 antialiased">
         <TopBar onNavigate={(h) => (window.location.hash = h.replace("#", ""))} />
         <main>
+          {error && (
+            <div className="mx-auto mt-6 max-w-md px-5">
+              <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs text-rose-800">
+                <p className="font-semibold">We couldn't load your account</p>
+                <p className="mt-1">{error}</p>
+              </div>
+            </div>
+          )}
           <LoginPage />
         </main>
         <Footer />

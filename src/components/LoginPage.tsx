@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { RiverbendLogo, IconLock, IconShield } from "./icons";
 import { useContent } from "../admin/store";
-import { useAuth, sampleAccounts } from "../account/auth";
+import { DatabaseError } from "../account/db";
+import { useAuth, useDemoCustomers } from "../account/auth";
 
 export default function LoginPage() {
   const { content, version } = useContent(); // version re-renders on save
@@ -9,18 +10,34 @@ export default function LoginPage() {
   const l = content.login;
   const loginCopy = content.account.login;
   const { signIn } = useAuth();
+  // Sample-account hints come from Supabase; falls back to the local demo list
+  // if the database cannot be read, so this marketing surface still renders.
+  const { demoCustomers } = useDemoCustomers();
   const [showPwd, setShowPwd] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (submitting) return;
     const data = new FormData(e.currentTarget);
     const id = (data.get("identifier") as string).trim();
     const pwd = data.get("password") as string;
     setError("");
 
-    const okResult = signIn(id, pwd);
+    let okResult;
+    try {
+      okResult = await signIn(id, pwd);
+    } catch (err) {
+      // A database failure is NOT the same as a wrong password — say so.
+      setError(
+        err instanceof DatabaseError
+          ? err.message
+          : "We couldn't reach the database to sign you in. Please try again."
+      );
+      return;
+    }
+
     if (!okResult) {
       setError("Those credentials don't match a sample account. Try the demo accounts shown below.");
       return;
@@ -153,7 +170,7 @@ export default function LoginPage() {
               Sample accounts · click to fill
             </p>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              {sampleAccounts.map((a) => (
+              {demoCustomers.map((a) => (
                 <button
                   key={a.id}
                   onClick={() => fillSample(a.username, a.password)}

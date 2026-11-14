@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useAuth, formatMoney } from "./auth";
+import { DatabaseError } from "./db";
 import { useContent } from "../admin/store";
 
 type Account = "checking" | "savings";
 
 export default function MovePage() {
-  const { user, updateAccount } = useAuth();
+  const { user, moveMoney } = useAuth();
   const { content, version } = useContent(); // version re-renders on save
   void version;
   const m = content.account.move;
@@ -14,19 +15,21 @@ export default function MovePage() {
   const [amount, setAmount] = useState("");
   const [showSuccess, setShowSuccess] = useState(false);
   const [showWarning, setShowWarning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   if (!user) return null;
 
   const restricted = from === "savings" && to === "checking";
 
-  const performMove = () => {
+  const performMove = async () => {
     const amt = parseFloat(amount);
     if (!amt || amt <= 0 || from === to) return;
-    if (amt > user.balance[from]) return;
-
-    const newBalance = { ...user.balance };
-    newBalance[from] = +(newBalance[from] - amt).toFixed(2);
-    newBalance[to] = +(newBalance[to] + amt).toFixed(2);
+    if (amt > user.balance[from]) {
+      setError(`Insufficient funds — ${formatMoney(user.balance[from])} available.`);
+      setShowWarning(false);
+      return;
+    }
 
     const fromLabel =
       from === "checking"
@@ -37,30 +40,39 @@ export default function MovePage() {
         ? content.account.accounts.checkingLabel
         : content.account.accounts.savingsLabel;
 
-    const newTx = {
-      id: `mv-${Date.now()}`,
-      merchant: `Transfer: ${fromLabel} → ${toLabel}`,
-      category: "Transfer",
-      amount: -amt,
-      date: new Date().toISOString().slice(0, 10),
-      account: from,
-    };
-    updateAccount({
-      balance: newBalance,
-      transactions: [newTx, ...user.transactions],
-    });
-    setShowWarning(false);
-    setShowSuccess(true);
+    setError(null);
+    setSubmitting(true);
+    try {
+      // Atomic: both balances and both ledger legs commit as one transaction.
+      await moveMoney({
+        from,
+        to,
+        amount: amt,
+        merchant: `Transfer: ${fromLabel} → ${toLabel}`,
+      });
+      setShowWarning(false);
+      setShowSuccess(true);
+    } catch (err) {
+      setShowWarning(false);
+      setError(
+        err instanceof DatabaseError
+          ? err.message
+          : "We couldn't complete that transfer. Please try again."
+      );
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (from === to || restricted) return;
+    if (from === to || restricted || submitting) return;
     performMove();
   };
 
   const onClose = () => {
     setShowSuccess(false);
+    setError(null);
     setAmount("");
   };
 
@@ -146,12 +158,19 @@ export default function MovePage() {
           </div>
         )}
 
+        {error && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs text-rose-800">
+            <p className="font-semibold">Transfer failed</p>
+            <p className="mt-1">{error}</p>
+          </div>
+        )}
+
         <button
           type="submit"
-          disabled={from === to || restricted}
+          disabled={from === to || restricted || submitting}
           className="mt-2 inline-flex w-full items-center justify-center rounded-xl bg-river-700 px-5 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-river-800 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {m.submitLabel}
+          {submitting ? "Moving…" : m.submitLabel}
         </button>
       </form>
 

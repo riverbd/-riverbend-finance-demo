@@ -2,9 +2,19 @@ import { useEffect, useState } from "react";
 import { useContent } from "./store";
 import type { ContentState } from "./store";
 import { RiverbendLogo } from "../components/icons";
-import { getSampleAccounts, readAccounts, useAuth, formatMoney } from "../account/auth";
+import { useAuth, formatMoney } from "../account/auth";
+import { DatabaseError } from "../account/db";
+import {
+  adminSetBalance,
+  adminSetCardholderName,
+  adminSetCredentials,
+  clearAdminCache,
+  fetchAdminCustomers,
+} from "./db";
+import type { AdminCustomer } from "./db";
 
 type Tab =
+  | "brand"
   | "hero"
   | "contact"
   | "about"
@@ -17,12 +27,14 @@ type Tab =
   | "account-credentials"
   | "account-send"
   | "account-move"
+  | "account-login"
   | "users"
   | "balances"
   | "cardholders"
   | "data";
 
 const tabs: { id: Tab; label: string }[] = [
+  { id: "brand", label: "Brand" },
   { id: "hero", label: "Landing · Hero" },
   { id: "contact", label: "Landing · Contact" },
   { id: "about", label: "Landing · About" },
@@ -34,14 +46,49 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "account-profile", label: "Account · Profile" },
   { id: "account-send", label: "Account · Send" },
   { id: "account-move", label: "Account · Move" },
+  { id: "account-login", label: "Account · Login copy" },
   { id: "users", label: "Users" },
   { id: "balances", label: "Balances" },
   { id: "cardholders", label: "Cardholders" },
   { id: "data", label: "Data" },
 ];
 
+/**
+ * Loads the customer table from Supabase for the admin data tabs.
+ * Re-reads whenever `version` changes so balances/cards stay in sync with saves.
+ */
+function useAdminCustomers(version: number) {
+  const [rows, setRows] = useState<AdminCustomer[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetchAdminCustomers()
+      .then((list) => {
+        if (cancelled) return;
+        setRows(list);
+        setError(null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(e instanceof DatabaseError ? e.message : "Could not load customers.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [version]);
+
+  return { rows, loading, error };
+}
+
 export default function AdminDashboard() {
-  const { content, setContent, resetContent, logoutAdmin, isAdmin } = useContent();
+  const { content, setContent, resetContent, logoutAdmin, isAdmin, loading, error, clearError } =
+    useContent();
   const [draft, setDraft] = useState<ContentState>(content);
   const [active, setActive] = useState<Tab>("hero");
   const [saved, setSaved] = useState(false);
@@ -57,21 +104,37 @@ export default function AdminDashboard() {
     setSaved(false);
   };
 
-  const onSave = () => {
-    console.log("[RIVERBEND] Admin onSave called. draft.contact.email =", draft.contact?.email, "draft.hero.headline =", draft.hero?.headline);
-    console.log("[RIVERBEND] localStorage BEFORE save:", localStorage.getItem("riverbend_content_v5")?.substring(0, 200));
-    setContent(draft);
-    setTimeout(() => {
-      console.log("[RIVERBEND] localStorage AFTER save:", localStorage.getItem("riverbend_content_v5")?.substring(0, 200));
-    }, 50);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const onSave = async () => {
+    setSaving(true);
+    setSaveError(null);
+    clearError();
+    try {
+      // Writes to Supabase; the provider only adopts it locally on success.
+      await setContent(draft);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setSaveError(
+        e instanceof DatabaseError ? e.message : "Could not save content to the database."
+      );
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const onReset = () => {
-    if (confirm("Reset all content to defaults? This cannot be undone.")) {
-      resetContent();
+  const onReset = async () => {
+    if (!confirm("Reset all website content to defaults? This cannot be undone.")) return;
+    setSaveError(null);
+    try {
+      await resetContent();
       setDraft(content);
+    } catch (e) {
+      setSaveError(
+        e instanceof DatabaseError ? e.message : "Could not reset content."
+      );
     }
   };
 
@@ -131,7 +194,7 @@ export default function AdminDashboard() {
               onClick={onSave}
               className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-river-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:bg-river-800"
             >
-              {saved ? "Saved ✓" : "Save changes"}
+              {saving ? "Saving…" : saved ? "Saved ✓" : "Save changes"}
             </button>
             <button
               onClick={onReset}
@@ -148,7 +211,19 @@ export default function AdminDashboard() {
         </aside>
 
         <main className="flex-1">
+          {(saveError || error) && (
+            <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs text-rose-800">
+              <p className="font-semibold">Database error</p>
+              <p className="mt-1">{saveError ?? error}</p>
+            </div>
+          )}
+          {loading && (
+            <div className="mb-4 rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-500">
+              Loading content from the database…
+            </div>
+          )}
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
+            {active === "brand" && <BrandEditor draft={draft} onChange={update} />}
             {active === "hero" && <HeroEditor draft={draft} onChange={update} />}
             {active === "contact" && <ContactEditor draft={draft} onChange={update} />}
             {active === "about" && <AboutEditor draft={draft} onChange={update} />}
@@ -160,6 +235,7 @@ export default function AdminDashboard() {
             {active === "account-profile" && <ProfileEditor draft={draft} onChange={update} />}
             {active === "account-send" && <SendEditor draft={draft} onChange={update} />}
             {active === "account-move" && <MoveEditor draft={draft} onChange={update} />}
+            {active === "account-login" && <AccountLoginEditor draft={draft} onChange={update} />}
             {active === "users" && <UsersEditor />}
             {active === "balances" && <BalancesEditor />}
             {active === "cardholders" && <CardholdersEditor />}
@@ -172,7 +248,7 @@ export default function AdminDashboard() {
               onClick={onSave}
               className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-river-700 px-4 py-2.5 text-sm font-semibold text-white"
             >
-              {saved ? "Saved ✓" : "Save changes"}
+              {saving ? "Saving…" : saved ? "Saved ✓" : "Save changes"}
             </button>
             <button
               onClick={onReset}
@@ -277,6 +353,58 @@ function ListEditor({
 }
 
 /* ---------------- Landing Editors ---------------- */
+
+function BrandEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (c: ContentState) => ContentState) => void }) {
+  const b = draft.brand;
+  return (
+    <div className="space-y-5">
+      <header>
+        <h2 className="text-xl font-semibold tracking-tight text-slate-900">Brand</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Company name and tagline. Shown in the site header, the footer, the copyright line, and the
+          sign-in panel.
+        </p>
+      </header>
+      <Input
+        label="Brand name"
+        value={b.name}
+        onChange={(v) => onChange((c) => ({ ...c, brand: { ...c.brand, name: v } }))}
+      />
+      <Input
+        label="Tagline"
+        value={b.tagline}
+        onChange={(v) => onChange((c) => ({ ...c, brand: { ...c.brand, tagline: v } }))}
+      />
+    </div>
+  );
+}
+
+function AccountLoginEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (c: ContentState) => ContentState) => void }) {
+  const l = draft.account.login;
+  const set = (patch: Partial<ContentState["account"]["login"]>) =>
+    onChange((c) => ({ ...c, account: { ...c.account, login: { ...c.account.login, ...patch } } }));
+  return (
+    <div className="space-y-5">
+      <header>
+        <h2 className="text-xl font-semibold tracking-tight text-slate-900">Account · Login copy</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Text shown while the customer sign-in form is submitting.
+        </p>
+      </header>
+      <Input
+        label="Submitting label (shown on the button while signing in)"
+        value={l.submittingLabel}
+        onChange={(v) => set({ submittingLabel: v })}
+      />
+      <Input
+        label="Success label"
+        value={l.successLabel}
+        onChange={(v) => set({ successLabel: v })}
+        hint="Reserved — not currently displayed by any page."
+      />
+    </div>
+  );
+}
 
 function HeroEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (c: ContentState) => ContentState) => void }) {
   const h = draft.hero;
@@ -583,27 +711,19 @@ function ProfileEditor({ draft, onChange }: { draft: ContentState; onChange: (fn
 /* ---------------- Credentials ---------------- */
 
 function CredentialsEditor() {
-  const { setAccountCredentials, version: authVersion } = useAuth();
-  const accounts: any[] = readAccounts();
-  void authVersion;
+  const { version } = useAuth();
+  const { rows, loading, error: loadError } = useAdminCustomers(version);
 
-  const [drafts, setDrafts] = useState<Record<string, { username: string; password: string; memberId: string; email: string }>>(() => {
-    const init: Record<string, { username: string; password: string; memberId: string; email: string }> = {};
-    accounts.forEach((a) => {
-      init[a.id] = {
-        username: a.username ?? "",
-        password: a.password ?? "",
-        memberId: a.memberId ?? "",
-        email: a.email ?? "",
-      };
-    });
-    return init;
-  });
+  const [drafts, setDrafts] = useState<
+    Record<string, { username: string; password: string; memberId: string; email: string }>
+  >({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  // Re-sync drafts whenever accounts change
   useEffect(() => {
     const init: Record<string, { username: string; password: string; memberId: string; email: string }> = {};
-    accounts.forEach((a) => {
+    rows.forEach((a) => {
       init[a.id] = {
         username: a.username ?? "",
         password: a.password ?? "",
@@ -612,29 +732,37 @@ function CredentialsEditor() {
       };
     });
     setDrafts(init);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authVersion]);
+  }, [rows]);
 
   const setField = (userId: string, key: keyof (typeof drafts)[string], value: string) => {
     setDrafts((d) => ({ ...d, [userId]: { ...d[userId], [key]: value } }));
   };
 
-  const saveOne = (userId: string) => {
+  const saveOne = async (userId: string) => {
     const d = drafts[userId];
     if (!d) return;
+    setError(null);
+    setNotice(null);
     if (!d.username.trim() || !d.password.trim()) {
-      alert("Username and password are required.");
+      setError("Username and password are required.");
       return;
     }
-    setAccountCredentials(userId, {
-      username: d.username.trim(),
-      password: d.password,
-      memberId: d.memberId.trim() || `MBR-${userId.toUpperCase()}-001`,
-      email: d.email.trim(),
-    });
-    alert(
-      `Saved for ${accounts.find((a) => a.id === userId)?.fullName}. New login: "${d.username.trim()}" with the password you set.`
-    );
+    setBusy(userId);
+    try {
+      await adminSetCredentials(userId, {
+        username: d.username.trim(),
+        password: d.password,
+        memberId: d.memberId.trim() || `MBR-${userId.toUpperCase()}-001`,
+        email: d.email.trim(),
+      });
+      setNotice(
+        `Saved for ${rows.find((a) => a.id === userId)?.fullName ?? userId}. New login: "${d.username.trim()}" with the password you set.`
+      );
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not save credentials.");
+    } finally {
+      setBusy(null);
+    }
   };
 
   return (
@@ -642,25 +770,42 @@ function CredentialsEditor() {
       <header>
         <h2 className="text-xl font-semibold tracking-tight text-slate-900">Account · Login credentials</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Edit username, password, member ID, and email. Changes apply immediately — log in with the new credentials to test.
+          Edit username, password, member ID, and email. Changes save to Supabase and apply to every
+          device immediately.
         </p>
       </header>
 
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
+        <p className="font-semibold">Demo credentials</p>
+        <p className="mt-1">
+          Passwords are stored as plaintext in <code className="font-mono">customers.demo_password</code>{" "}
+          for this demo. Replace with Supabase Auth before loading real customer data.
+        </p>
+      </div>
+
+      {loading && <p className="text-xs text-slate-500">Loading customers…</p>}
+      {(error || loadError) && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+          {error ?? loadError}
+        </div>
+      )}
+      {notice && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
+          {notice}
+        </div>
+      )}
+
       <div className="space-y-4">
-        {accounts.map((a: any) => {
-          const d = drafts[a.id] ?? {
-            username: "",
-            password: "",
-            memberId: "",
-            email: "",
-          };
+        {rows.map((a) => {
+          const d = drafts[a.id] ?? { username: "", password: "", memberId: "", email: "" };
           return (
             <div key={a.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm font-semibold text-slate-900">{a.fullName}</p>
                   <p className="text-[11px] text-slate-500">
-                    <code className="font-mono">{a.id}</code> · current login: <code className="font-mono">{a.username}</code>
+                    <code className="font-mono">{a.id}</code> · current login:{" "}
+                    <code className="font-mono">{a.username}</code>
                   </p>
                 </div>
               </div>
@@ -697,9 +842,10 @@ function CredentialsEditor() {
               <div className="mt-4 flex justify-end">
                 <button
                   onClick={() => saveOne(a.id)}
-                  className="inline-flex items-center justify-center rounded-xl bg-river-700 px-4 py-2 text-xs font-semibold text-white hover:bg-river-800"
+                  disabled={busy === a.id}
+                  className="inline-flex items-center justify-center rounded-xl bg-river-700 px-4 py-2 text-xs font-semibold text-white hover:bg-river-800 disabled:opacity-60"
                 >
-                  Save credentials
+                  {busy === a.id ? "Saving…" : "Save credentials"}
                 </button>
               </div>
             </div>
@@ -832,15 +978,23 @@ function MoveEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (
 /* ---------------- Users ---------------- */
 
 function UsersEditor() {
+  const { version } = useAuth();
+  const { rows, loading, error } = useAdminCustomers(version);
+
   return (
     <div className="space-y-5">
       <header>
         <h2 className="text-xl font-semibold tracking-tight text-slate-900">Users</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Sample accounts available for the demo login. (Read-only in this version — wired from
-          <code className="ml-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px]">src/account/auth.tsx</code>)
+          Sample accounts available for the demo login. Read-only view — live from Supabase.
         </p>
       </header>
+
+      {loading && <p className="text-xs text-slate-500">Loading customers…</p>}
+      {error && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">{error}</div>
+      )}
+
       <div className="overflow-hidden rounded-xl border border-slate-200">
         <table className="w-full text-left text-sm">
           <thead className="bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
@@ -853,7 +1007,7 @@ function UsersEditor() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {getSampleAccounts().map((u: any) => (
+            {rows.map((u) => (
               <tr key={u.id}>
                 <td className="px-4 py-3 font-medium text-slate-900">{u.fullName}</td>
                 <td className="px-4 py-3 font-mono text-xs text-slate-700">{u.username}</td>
@@ -876,52 +1030,55 @@ function UsersEditor() {
 /* ---------------- Balances ---------------- */
 
 function BalancesEditor() {
-  const { setUserBalance, version } = useAuth();
-  // Read from the persisted store on every render so this view stays in sync
-  const accounts = getSampleAccounts();
-  // Re-initialize drafts when the store version changes
-  const [drafts, setDrafts] = useState<Record<string, { checking: string; savings: string }>>(() => {
-    const init: Record<string, { checking: string; savings: string }> = {};
-    accounts.forEach((u) => {
-      init[u.id] = {
-        checking: u.balance.checking.toFixed(2),
-        savings: u.balance.savings.toFixed(2),
-      };
-    });
-    return init;
-  });
-  // Keep drafts in sync after admin saves (version bumps when accounts change)
+  const { refreshUser, version } = useAuth();
+  const { rows, loading, error: loadError } = useAdminCustomers(version);
+  const [drafts, setDrafts] = useState<Record<string, { checking: string; savings: string }>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Re-seed drafts whenever the database rows change.
   useEffect(() => {
     const init: Record<string, { checking: string; savings: string }> = {};
-    accounts.forEach((u) => {
+    rows.forEach((u) => {
       init[u.id] = {
         checking: u.balance.checking.toFixed(2),
         savings: u.balance.savings.toFixed(2),
       };
     });
     setDrafts(init);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version]);
+  }, [rows]);
 
   const setField = (id: string, key: "checking" | "savings", v: string) => {
     setDrafts((d) => ({ ...d, [id]: { ...d[id], [key]: v } }));
   };
 
-  const save = (id: string) => {
+  const save = async (id: string) => {
     const d = drafts[id];
     const checking = parseFloat(d.checking);
     const savings = parseFloat(d.savings);
+    setError(null);
+    setNotice(null);
     if (!Number.isFinite(checking) || checking < 0) {
-      alert("Checking balance must be a non-negative number.");
+      setError("Checking balance must be a non-negative number.");
       return;
     }
     if (!Number.isFinite(savings) || savings < 0) {
-      alert("Fixed savings balance must be a non-negative number.");
+      setError("Fixed savings balance must be a non-negative number.");
       return;
     }
-    setUserBalance(id, "checking", checking);
-    setUserBalance(id, "savings", savings);
-    alert(`Balances updated for ${accounts.find((u) => u.id === id)?.fullName}.`);
+    setBusy(id);
+    try {
+      await adminSetBalance(id, "checking", checking);
+      await adminSetBalance(id, "savings", savings);
+      // Reload the customer table and any active session from the database.
+      await refreshUser();
+      setNotice(`Balances saved for ${rows.find((u) => u.id === id)?.fullName ?? id}.`);
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not save balances.");
+    } finally {
+      setBusy(null);
+    }
   };
 
   return (
@@ -929,13 +1086,25 @@ function BalancesEditor() {
       <header>
         <h2 className="text-xl font-semibold tracking-tight text-slate-900">Balances</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Edit Checking and Fixed savings balances for each sample user. Changes apply immediately to
-          any active session on this device.
+          Edit Checking and Fixed savings balances for each customer. Saves to Supabase and applies
+          to every device.
         </p>
       </header>
 
+      {loading && <p className="text-xs text-slate-500">Loading customers…</p>}
+      {(error || loadError) && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+          {error ?? loadError}
+        </div>
+      )}
+      {notice && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
+          {notice}
+        </div>
+      )}
+
       <div className="space-y-4">
-        {accounts.map((u) => {
+        {rows.map((u) => {
           const d = drafts[u.id] ?? { checking: "0.00", savings: "0.00" };
           return (
             <div key={u.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -962,9 +1131,10 @@ function BalancesEditor() {
                 </p>
                 <button
                   onClick={() => save(u.id)}
-                  className="inline-flex items-center justify-center rounded-xl bg-river-700 px-4 py-2 text-xs font-semibold text-white hover:bg-river-800"
+                  disabled={busy === u.id}
+                  className="inline-flex items-center justify-center rounded-xl bg-river-700 px-4 py-2 text-xs font-semibold text-white hover:bg-river-800 disabled:opacity-60"
                 >
-                  Save balances
+                  {busy === u.id ? "Saving…" : "Save balances"}
                 </button>
               </div>
             </div>
@@ -1007,48 +1177,41 @@ function BalanceField({
 /* ---------------- Cardholders ---------------- */
 
 function CardholdersEditor() {
-  const { setCardholderName, version } = useAuth();
-  // ALWAYS read the freshest data from the persistent store on every render.
-  const accounts: any[] = getSampleAccounts();
+  const { refreshUser, version } = useAuth();
+  const { rows, loading, error: loadError } = useAdminCustomers(version);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const [drafts, setDrafts] = useState<Record<string, string>>(() => {
-    const init: Record<string, string> = {};
-    accounts.forEach((u) => {
-      u.cards.forEach((c: any) => {
-        init[c.id] = c.cardholderName ?? u.fullName;
-      });
-    });
-    console.log("[RIVERBEND] CardholdersEditor initial drafts:", init);
-    return init;
-  });
-
-  // Re-sync drafts whenever accounts change
   useEffect(() => {
     const init: Record<string, string> = {};
-    accounts.forEach((u) => {
-      u.cards.forEach((c: any) => {
-        init[c.id] = c.cardholderName ?? u.fullName;
-      });
-    });
-    console.log("[RIVERBEND] CardholdersEditor re-sync drafts (version=" + version + "):", init);
+    rows.forEach((u) => u.cards.forEach((c) => (init[c.id] = c.cardholderName ?? u.fullName)));
     setDrafts(init);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version]);
+  }, [rows]);
 
   const setName = (cardId: string, v: string) => {
     setDrafts((d) => ({ ...d, [cardId]: v }));
   };
 
-  const save = () => {
-    console.log("[RIVERBEND] CardholdersEditor.save called with drafts:", drafts);
-    accounts.forEach((u) => {
-      u.cards.forEach((c: any) => {
-        const name = drafts[c.id] ?? u.fullName;
-        console.log("[RIVERBEND] saving cardholder:", u.id, c.id, "=", name);
-        setCardholderName(u.id, c.id, name);
-      });
-    });
-    alert("Cardholder names saved. The user account will show them on next refresh.");
+  const save = async () => {
+    setError(null);
+    setNotice(null);
+    setBusy(true);
+    try {
+      for (const u of rows) {
+        for (const c of u.cards) {
+          const name = drafts[c.id] ?? u.fullName;
+          await adminSetCardholderName(u.id, c.id, name);
+        }
+      }
+      await refreshUser();
+      setNotice("Cardholder names saved to the database.");
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not save cardholder names.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -1056,12 +1219,25 @@ function CardholdersEditor() {
       <header>
         <h2 className="text-xl font-semibold tracking-tight text-slate-900">Cardholders</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Set the name engraved on each card. The user account will display the name you save here.
+          Set the name engraved on each card. Changes are stored in Supabase and shown on the
+          customer's card.
         </p>
       </header>
 
+      {loading && <p className="text-xs text-slate-500">Loading cards…</p>}
+      {(error || loadError) && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+          {error ?? loadError}
+        </div>
+      )}
+      {notice && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
+          {notice}
+        </div>
+      )}
+
       <div className="space-y-5">
-        {accounts.map((u: any) => (
+        {rows.map((u) => (
           <div key={u.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between">
               <div>
@@ -1073,7 +1249,7 @@ function CardholdersEditor() {
             </div>
 
             <div className="mt-4 space-y-3">
-              {u.cards.map((c: any) => (
+              {u.cards.map((c) => (
                 <div
                   key={c.id}
                   className="flex flex-col gap-2 rounded-xl border border-slate-100 bg-slate-50/60 p-3 sm:flex-row sm:items-center"
@@ -1099,20 +1275,10 @@ function CardholdersEditor() {
 
       <button
         onClick={save}
-        className="inline-flex items-center justify-center rounded-xl bg-river-700 px-5 py-3 text-sm font-semibold text-white hover:bg-river-800"
+        disabled={busy}
+        className="inline-flex items-center justify-center rounded-xl bg-river-700 px-5 py-3 text-sm font-semibold text-white hover:bg-river-800 disabled:opacity-60"
       >
-        Save cardholder names
-      </button>
-
-      <button
-        onClick={() => {
-          const raw = localStorage.getItem("riverbend_accounts_v4");
-          console.log("[RIVERBEND DEBUG] localStorage riverbend_accounts_v4 =", raw);
-          alert("Saved data in localStorage:\n\n" + (raw ?? "(empty)"));
-        }}
-        className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-      >
-        Debug: show localStorage data
+        {busy ? "Saving…" : "Save cardholder names"}
       </button>
     </div>
   );
@@ -1121,23 +1287,37 @@ function CardholdersEditor() {
 /* ---------------- Data ---------------- */
 
 function DataTab() {
-  const { content, setContent } = useContent();
+  const { content, setContent, resetContent, loading } = useContent();
+  const { refreshUser } = useAuth();
   const exported = JSON.stringify(content, null, 2);
   const [pasted, setPasted] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const importJson = () => {
+  const importJson = async () => {
+    setError(null);
+    setNotice(null);
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(pasted);
-      // Minimal shape check
-      if (typeof parsed !== "object" || !parsed.hero || !parsed.contact) {
-        alert("That doesn't look like a RIVERBEND content JSON. Paste the full export from the Data tab.");
-        return;
-      }
-      setContent(parsed);
-      setPasted("");
-      alert("Content imported. Refresh the landing site to see updates.");
+      parsed = JSON.parse(pasted);
     } catch (e) {
-      alert("Invalid JSON: " + (e as Error).message);
+      setError("Invalid JSON: " + (e as Error).message);
+      return;
+    }
+    if (typeof parsed !== "object" || !parsed || !("hero" in parsed) || !("contact" in parsed)) {
+      setError("That doesn't look like RIVERBEND content JSON. Paste a full export from this tab.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await setContent(parsed as typeof content);
+      setPasted("");
+      setNotice("Content imported and saved to the database.");
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not import content.");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -1146,20 +1326,33 @@ function DataTab() {
       <header>
         <h2 className="text-xl font-semibold tracking-tight text-slate-900">Data</h2>
         <p className="mt-1 text-sm text-slate-500">
-          View, copy, or restore the landing-page content. Use Export to back up, Import to restore.
+          View, copy, or restore the website content. Everything here lives in Supabase.
         </p>
       </header>
 
-      {/* Status indicators */}
+      {error && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">{error}</div>
+      )}
+      {notice && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">{notice}</div>
+      )}
+
+      {/* Storage status */}
       <div className="grid gap-3 sm:grid-cols-2">
-        <StatusCard
-          label="Landing content"
-          storageKey="riverbend_content_v5"
-        />
-        <StatusCard
-          label="Account data (users, balances, cards, cardholders)"
-          storageKey="riverbend_accounts_v4"
-        />
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Landing content</p>
+          <p className="mt-1 text-sm font-semibold text-slate-900">
+            {loading ? "Loading…" : `${(new Blob([exported]).size / 1024).toFixed(1)} KB in Supabase`}
+          </p>
+          <p className="mt-0.5 font-mono text-[10px] text-slate-400">site_content · slug = default</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+            Account data (users, balances, cards, cardholders)
+          </p>
+          <p className="mt-1 text-sm font-semibold text-slate-900">In Supabase</p>
+          <p className="mt-0.5 font-mono text-[10px] text-slate-400">customers · bank_accounts · cards</p>
+        </div>
       </div>
 
       <div>
@@ -1201,63 +1394,43 @@ function DataTab() {
         />
         <button
           onClick={importJson}
-          disabled={!pasted.trim()}
+          disabled={!pasted.trim() || busy}
           className="mt-2 inline-flex items-center justify-center rounded-xl bg-river-700 px-4 py-2 text-sm font-semibold text-white hover:bg-river-800 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Import JSON
+          {busy ? "Importing…" : "Import JSON"}
         </button>
       </div>
 
       <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs text-rose-900">
-        <p className="font-semibold">Reset all data to defaults</p>
+        <p className="font-semibold">Reset website content to defaults</p>
         <p className="mt-1">
-          This clears all landing content and account data from this device and restores the original
-          demo state. Cannot be undone.
+          Writes the original demo copy back to Supabase. This is a write, not a delete — no rows are
+          removed and account data is untouched.
         </p>
         <button
-          onClick={() => {
-            if (
-              confirm(
-                "Reset ALL RIVERBEND data on this device to defaults? This cannot be undone."
-              )
-            ) {
-              try {
-                Object.keys(window.localStorage)
-                  .filter((k) => k.startsWith("riverbend_"))
-                  .forEach((k) => window.localStorage.removeItem(k));
-                window.location.reload();
-              } catch {}
+          onClick={async () => {
+            if (!confirm("Reset all website content to the original defaults?")) return;
+            setError(null);
+            setNotice(null);
+            setBusy(true);
+            try {
+              await resetContent();
+              clearAdminCache();
+              await refreshUser();
+              setNotice("Website content restored to defaults.");
+            } catch (e) {
+              setError(e instanceof DatabaseError ? e.message : "Could not reset content.");
+            } finally {
+              setBusy(false);
             }
           }}
-          className="mt-3 inline-flex items-center justify-center rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700"
+          disabled={busy}
+          className="mt-3 inline-flex items-center justify-center rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-60"
         >
-          Reset all data
+          {busy ? "Resetting…" : "Reset content"}
         </button>
       </div>
     </div>
   );
 }
 
-function StatusCard({ label, storageKey }: { label: string; storageKey: string }) {
-  const [size, setSize] = useState<string>("(checking…)");
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(storageKey);
-      if (!raw) {
-        setSize("(no data saved — using defaults)");
-      } else {
-        const kb = (new Blob([raw]).size / 1024).toFixed(1);
-        setSize(`${kb} KB saved`);
-      }
-    } catch {
-      setSize("(unable to read)");
-    }
-  }, [storageKey]);
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</p>
-      <p className="mt-1 text-sm font-semibold text-slate-900">{size}</p>
-      <p className="mt-0.5 font-mono text-[10px] text-slate-400">{storageKey}</p>
-    </div>
-  );
-}

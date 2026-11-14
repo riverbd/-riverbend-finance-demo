@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { RiverbendLogo } from "../components/icons";
+import { useContent } from "../admin/store";
 import {
   IconHome,
   IconAccounts,
@@ -34,6 +35,7 @@ export default function AccountShell({
   onSignOut: () => void;
   children: ReactNode;
 }) {
+  const { content } = useContent();
   return (
     <div className="min-h-screen bg-slate-50 pb-24">
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/85 backdrop-blur">
@@ -41,7 +43,7 @@ export default function AccountShell({
           <div className="flex items-center gap-2 text-river-700">
             <RiverbendLogo className="h-6 w-6" />
             <span className="text-sm font-semibold tracking-tight text-slate-900">
-              RIVERBEND
+              {content.brand.name}
             </span>
           </div>
           <button

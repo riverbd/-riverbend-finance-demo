@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+preview/
+.vite/
+
+# Environment files — never commit real keys.
+# .env.example IS committed (placeholders only).
+.env
+.env.*
+!.env.example
+
+# Misc
+*.local
+.DS_Store

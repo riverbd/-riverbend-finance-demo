@@ -1,5 +1,7 @@
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { DatabaseError } from "../account/db";
+import { fetchSiteContent, saveSiteContent } from "./db";
 
 export type ContentState = {
   brand: { name: string; tagline: string };
@@ -261,8 +263,17 @@ type Ctx = {
   content: ContentState;
   /** Bumps on every save so consumers can re-read live. */
   version: number;
-  setContent: (c: ContentState) => void;
-  resetContent: () => void;
+  /** True while the document is being loaded from Supabase. */
+  loading: boolean;
+  /** A load/save failure, ready to show in the dashboard. */
+  error: string | null;
+  /** Persist the whole document to Supabase. Throws DatabaseError on failure. */
+  setContent: (c: ContentState) => Promise<void>;
+  /** Write the defaults back to Supabase. */
+  resetContent: () => Promise<void>;
+  /** Re-read the document from Supabase. */
+  refreshContent: () => Promise<void>;
+  clearError: () => void;
   isAdmin: boolean;
   loginAdmin: (email: string, password: string) => boolean;
   logoutAdmin: () => void;
@@ -270,106 +281,101 @@ type Ctx = {
 
 const ContentCtx = createContext<Ctx | null>(null);
 
-// Bumping this key forces a clean slate for anyone with stale localStorage
-const STORAGE_KEY = "riverbend_content_v5";
+// Admin *session* only. Website content lives in Supabase (site_content).
 const ADMIN_KEY = "riverbend_admin_v5";
 export const ADMIN_EMAIL = "hhrqqa@gmail.com";
 export const ADMIN_PASSWORD = "67500363oi!";
 
 /**
- * Read the persisted content from localStorage.
- * Always returns the latest persisted state, or defaults if nothing is saved.
- * No merge — what you saved is what you get.
+ * Merge a stored document over the defaults.
+ *
+ * A stored document always wins, but any section missing from it (an older
+ * save, or a partial import) falls back to the default so a page can never
+ * render `undefined`. Operates on the same shape returned by Supabase.
  */
-function loadContent(): ContentState {
-  if (typeof window === "undefined") return defaultContent;
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return defaultContent;
-    const parsed = JSON.parse(raw) as ContentState;
-    // Backfill any missing top-level keys from defaults so old saves still render.
-    return {
-      ...defaultContent,
-      ...parsed,
-      hero: { ...defaultContent.hero, ...parsed.hero },
-      contact: { ...defaultContent.contact, ...parsed.contact },
-      about: { ...defaultContent.about, ...parsed.about },
-      signup: { ...defaultContent.signup, ...parsed.signup },
-      login: { ...defaultContent.login, ...parsed.login },
-      account: {
-        ...defaultContent.account,
-        ...(parsed.account ?? {}),
-        dashboard: { ...defaultContent.account.dashboard, ...(parsed.account?.dashboard ?? {}) },
-        accounts: { ...defaultContent.account.accounts, ...(parsed.account?.accounts ?? {}) },
-        cards: { ...defaultContent.account.cards, ...(parsed.account?.cards ?? {}) },
-        profile: { ...defaultContent.account.profile, ...(parsed.account?.profile ?? {}) },
-        send: { ...defaultContent.account.send, ...(parsed.account?.send ?? {}) },
-        move: { ...defaultContent.account.move, ...(parsed.account?.move ?? {}) },
-        login: { ...defaultContent.account.login, ...(parsed.account?.login ?? {}) },
-      },
-    };
-  } catch {
-    return defaultContent;
-  }
-}
-
-function saveContent(c: ContentState) {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(c));
-    // Clear any stale data from previous storage key versions
-    cleanupOldContentKeys();
-  } catch {}
-}
-
-function cleanupOldContentKeys() {
-  try {
-    const oldKeys = [
-      "riverbend_content_v1",
-      "riverbend_content_v2",
-      "riverbend_content_v3",
-      "riverbend_content_v4",
-    ];
-    oldKeys.forEach((k) => window.localStorage.removeItem(k));
-  } catch {}
+function mergeWithDefaults(parsed: Partial<ContentState>): ContentState {
+  return {
+    ...defaultContent,
+    ...parsed,
+    brand: { ...defaultContent.brand, ...parsed.brand },
+    hero: { ...defaultContent.hero, ...parsed.hero },
+    contact: { ...defaultContent.contact, ...parsed.contact },
+    about: { ...defaultContent.about, ...parsed.about },
+    signup: { ...defaultContent.signup, ...parsed.signup },
+    login: { ...defaultContent.login, ...parsed.login },
+    account: {
+      ...defaultContent.account,
+      ...(parsed.account ?? {}),
+      dashboard: { ...defaultContent.account.dashboard, ...(parsed.account?.dashboard ?? {}) },
+      accounts: { ...defaultContent.account.accounts, ...(parsed.account?.accounts ?? {}) },
+      cards: { ...defaultContent.account.cards, ...(parsed.account?.cards ?? {}) },
+      profile: { ...defaultContent.account.profile, ...(parsed.account?.profile ?? {}) },
+      send: { ...defaultContent.account.send, ...(parsed.account?.send ?? {}) },
+      move: { ...defaultContent.account.move, ...(parsed.account?.move ?? {}) },
+      login: { ...defaultContent.account.login, ...(parsed.account?.login ?? {}) },
+    },
+  };
 }
 
 export function ContentProvider({ children }: { children: ReactNode }) {
-  // Always start by reading from localStorage so a refresh shows the saved state.
-  const [content, setContentState] = useState<ContentState>(loadContent);
+  // Renders immediately with the last-known/default document, then replaces it
+  // with whatever Supabase holds. Nothing is read from localStorage.
+  const [content, setContentState] = useState<ContentState>(defaultContent);
   const [version, setVersion] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState<boolean>(() => {
     try {
+      // Admin *session* flag only — website content is not stored here.
       return window.localStorage.getItem(ADMIN_KEY) === "1";
     } catch {
       return false;
     }
   });
 
-  // Wrap setContent so every save ALSO writes to localStorage in the same tick
-  // AND bumps the version counter so every consumer re-renders.
-  const setContent = useCallback((c: ContentState) => {
-    saveContent(c); // disk first, so even a hard refresh immediately after will see it
-    setContentState(c);
-    setVersion((v) => v + 1);
-    // Notify same-tab listeners too (the storage event only fires in OTHER tabs).
-    window.dispatchEvent(new CustomEvent("riverbend:content-changed"));
-    // Helpful for the user to verify saves in DevTools
-    // eslint-disable-next-line no-console
-    console.log(
-      "[RIVERBEND] Content saved",
-      new Date().toLocaleTimeString(),
-      "— version:",
-      version + 1
-    );
-  }, [version]);
+  const clearError = useCallback(() => setError(null), []);
 
-  const resetContent = useCallback(() => {
-    saveContent(defaultContent);
-    setContentState(defaultContent);
-    setVersion((v) => v + 1);
-    window.dispatchEvent(new CustomEvent("riverbend:content-changed"));
-    console.log("[RIVERBEND] Content reset to defaults");
+  /** Re-read the document from Supabase. Never falls back to a cached copy. */
+  const refreshContent = useCallback(async () => {
+    try {
+      const stored = await fetchSiteContent();
+      setContentState(stored ? mergeWithDefaults(stored) : defaultContent);
+      setError(null);
+      setVersion((v) => v + 1);
+    } catch (e) {
+      // Surface the failure instead of quietly rendering stale content.
+      setError(e instanceof DatabaseError ? e.message : "Could not load website content.");
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void refreshContent();
+  }, [refreshContent]);
+
+  /**
+   * Persist the whole document to Supabase, then adopt it locally.
+   * The state only changes after the write succeeds, so a failed save can
+   * never leave the UI showing content the database does not have.
+   */
+  const setContent = useCallback(async (c: ContentState) => {
+    try {
+      await saveSiteContent(c);
+      setContentState(c);
+      setError(null);
+      setVersion((v) => v + 1);
+      window.dispatchEvent(new CustomEvent("riverbend:content-changed"));
+    } catch (e) {
+      const err = e instanceof DatabaseError ? e : new DatabaseError("Could not save website content.");
+      setError(err.message);
+      throw err; // let the admin surface it
+    }
+  }, []);
+
+  const resetContent = useCallback(async () => {
+    await setContent(defaultContent);
+  }, [setContent]);
 
   const loginAdmin = useCallback((email: string, password: string) => {
     if (email.trim().toLowerCase() === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
@@ -389,23 +395,31 @@ export function ContentProvider({ children }: { children: ReactNode }) {
     setIsAdmin(false);
   }, []);
 
-  // Cross-tab sync: when another tab saves to localStorage, update here too.
+  // Cross-tab / cross-client sync: another tab saving to Supabase is picked up
+  // when the window regains focus. (There is no `storage` event for Supabase.)
+  const refreshRef = useRef(refreshContent);
+  refreshRef.current = refreshContent;
   useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY && e.newValue) {
-        try {
-          setContentState(JSON.parse(e.newValue) as ContentState);
-          setVersion((v) => v + 1);
-        } catch {}
-      }
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    const onFocus = () => void refreshRef.current();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, []);
 
   return (
     <ContentCtx.Provider
-      value={{ content, version, setContent, resetContent, isAdmin, loginAdmin, logoutAdmin }}
+      value={{
+        content,
+        version,
+        loading,
+        error,
+        setContent,
+        resetContent,
+        refreshContent,
+        clearError,
+        isAdmin,
+        loginAdmin,
+        logoutAdmin,
+      }}
     >
       {children}
     </ContentCtx.Provider>

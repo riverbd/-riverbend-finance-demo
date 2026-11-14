@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useAuth, formatMoney } from "./auth";
+import { DatabaseError } from "./db";
 import { useContent } from "../admin/store";
 
 export default function SendPage() {
-  const { user, updateAccount } = useAuth();
+  const { user, sendMoney } = useAuth();
   const { content, version } = useContent(); // version re-renders on save
   void version;
   const s = content.account.send;
@@ -14,42 +15,56 @@ export default function SendPage() {
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
   const [showSuccess, setShowSuccess] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   if (!user) return null;
 
   const restricted = from === "savings";
 
-  const onSubmit = (e: React.FormEvent) => {
+  const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (restricted) return; // hard-block sending from Fixed savings
+    if (restricted || submitting) return; // hard-block sending from Fixed savings
     const amt = parseFloat(amount);
     if (!amt || amt <= 0) return;
-    if (amt > user.balance[from]) return;
-
-    const newBalance = { ...user.balance };
-    newBalance[from] = +(newBalance[from] - amt).toFixed(2);
+    if (amt > user.balance[from]) {
+      setError(
+        `Insufficient funds — your ${content.account.accounts[
+          from === "checking" ? "checkingLabel" : "savingsLabel"
+        ].toLowerCase()} balance is ${formatMoney(user.balance[from])}.`
+      );
+      return;
+    }
 
     const recipientLabel = recipientName
       ? `${recipientName} · ${recipientBank || "External bank"}`
       : recipientAccount || "External transfer";
 
-    const newTx = {
-      id: `tx-${Date.now()}`,
-      merchant: `Transfer to ${recipientLabel}`,
-      category: "Transfer",
-      amount: -amt,
-      date: new Date().toISOString().slice(0, 10),
-      account: from,
-    };
-    updateAccount({
-      balance: newBalance,
-      transactions: [newTx, ...user.transactions],
-    });
-    setShowSuccess(true);
+    setError(null);
+    setSubmitting(true);
+    try {
+      // Atomic: the debit and the ledger row commit together in Postgres, then
+      // the account is reloaded from the database.
+      await sendMoney({
+        from,
+        amount: amt,
+        merchant: `Transfer to ${recipientLabel}`,
+      });
+      setShowSuccess(true);
+    } catch (err) {
+      setError(
+        err instanceof DatabaseError
+          ? err.message
+          : "We couldn't complete that transfer. Please try again."
+      );
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const onClose = () => {
     setShowSuccess(false);
+    setError(null);
     setRecipientName("");
     setRecipientAccount("");
     setRecipientBank("");
@@ -147,12 +162,19 @@ export default function SendPage() {
           </div>
         )}
 
+        {error && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs text-rose-800">
+            <p className="font-semibold">Transfer failed</p>
+            <p className="mt-1">{error}</p>
+          </div>
+        )}
+
         <button
           type="submit"
-          disabled={restricted}
+          disabled={restricted || submitting}
           className="mt-2 inline-flex w-full items-center justify-center rounded-xl bg-river-700 px-5 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-river-800 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {s.submitLabel}
+          {submitting ? "Sending…" : s.submitLabel}
         </button>
       </form>
 
