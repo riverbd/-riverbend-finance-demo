@@ -1,10 +1,21 @@
 import { useState } from "react";
-import { useContent, ADMIN_EMAIL } from "./store";
-import { RiverbendLogo } from "../components/icons";
+import { useContent } from "./store";
 
+/**
+ * Admin sign-in.
+ *
+ * Deliberately minimal: a heading, a blank username field, a blank password
+ * field, a LOGIN button and a way back to the marketing homepage. No card, no
+ * illustration, no promotional copy, and nothing prefilled — the username field
+ * previously defaulted to the admin email address, which put the account name
+ * on screen for anyone opening the page. Both fields start empty on every load.
+ *
+ * Authentication itself is unchanged: `loginAdmin` is the same function the
+ * dashboard has always used.
+ */
 export default function AdminLogin() {
   const { loginAdmin, isAdmin } = useContent();
-  const [email, setEmail] = useState(ADMIN_EMAIL);
+  const [username, setUsername] = useState("");
   const [pwd, setPwd] = useState("");
   const [error, setError] = useState("");
 
@@ -15,90 +26,84 @@ export default function AdminLogin() {
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!loginAdmin(email, pwd)) {
-      setError("Incorrect password.");
-    } else {
+    if (loginAdmin(username, pwd)) {
       setError("");
+    } else {
+      setError("Incorrect username or password.");
     }
   };
 
+  // Take the visitor to the marketing homepage. `#top` resolves to the home
+  // page in App's route table; App listens for hashchange, so this navigates.
+  const goToLandingPage = () => {
+    window.location.hash = "top";
+  };
+
   return (
-    <div className="relative min-h-screen overflow-hidden bg-slate-950 text-white">
-      <div className="pointer-events-none absolute inset-0 -z-10">
-        <div className="absolute -left-32 top-10 h-80 w-80 rounded-full bg-river-700/30 blur-3xl" />
-        <div className="absolute right-0 bottom-0 h-96 w-96 rounded-full bg-cyan-700/20 blur-3xl" />
-      </div>
+    <div className="flex min-h-screen items-center justify-center bg-white px-5 py-12">
+      <div className="w-full max-w-sm">
+        <h1 className="text-center text-2xl font-semibold tracking-wide text-slate-900">
+          LOGIN
+        </h1>
 
-      <div className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center px-5 py-12">
-        <div className="flex items-center gap-2 text-river-300">
-          <RiverbendLogo className="h-7 w-7" />
-          <span className="text-lg font-semibold tracking-tight">RIVERBEND</span>
-        </div>
+        {/* autoComplete off/new-password keeps browsers from autofilling the
+            fields, so they are genuinely empty when the page opens. */}
+        <form onSubmit={onSubmit} className="mt-8 space-y-4" autoComplete="off">
+          <input
+            type="text"
+            name="username"
+            aria-label="Username"
+            placeholder="Username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="off"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            autoFocus
+            required
+            className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 text-base text-slate-900 placeholder-slate-400 outline-none transition-colors focus:border-river-500 focus:ring-2 focus:ring-river-500/20"
+          />
 
-        <div className="mt-8 w-full rounded-3xl border border-white/10 bg-white/5 p-7 backdrop-blur sm:p-9">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-river-300">
-            Admin
+          <input
+            type="password"
+            name="password"
+            aria-label="Password"
+            placeholder="Password"
+            value={pwd}
+            onChange={(e) => setPwd(e.target.value)}
+            autoComplete="new-password"
+            required
+            className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 text-base text-slate-900 placeholder-slate-400 outline-none transition-colors focus:border-river-500 focus:ring-2 focus:ring-river-500/20"
+          />
+
+          <button
+            type="submit"
+            className="w-full rounded-lg bg-river-700 px-5 py-3 text-sm font-semibold uppercase tracking-wider text-white transition-colors hover:bg-river-800"
+          >
+            LOGIN
+          </button>
+        </form>
+
+        {/* Only rendered after a failed attempt, so the idle page is exactly the
+            five required elements. aria-live announces it to screen readers. */}
+        {error && (
+          <p
+            role="alert"
+            aria-live="polite"
+            className="mt-4 rounded-lg bg-rose-50 px-4 py-3 text-sm text-rose-700"
+          >
+            {error}
           </p>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-            Sign in to the admin panel
-          </h1>
-          <p className="mt-1 text-sm text-river-100">
-            Edit the landing page copy from one place.
-          </p>
+        )}
 
-          <form onSubmit={onSubmit} className="mt-7 space-y-4">
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-river-200">
-                Email address
-              </label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                autoComplete="username"
-                autoFocus
-                placeholder="admin@example.com"
-                className="mt-2 w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-3 text-sm text-white placeholder-slate-500 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/30"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-river-200">
-                Password
-              </label>
-              <input
-                type="password"
-                value={pwd}
-                onChange={(e) => setPwd(e.target.value)}
-                required
-                autoComplete="current-password"
-                placeholder="••••••••"
-                className="mt-2 w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-3 text-sm text-white placeholder-slate-500 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/30"
-              />
-            </div>
-
-            {error && (
-              <p className="rounded-lg bg-rose-500/15 px-3 py-2 text-xs text-rose-200">
-                {error}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-river-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-river-500 hover:shadow-lg"
-            >
-              Sign in
-            </button>
-          </form>
-
-        </div>
-
-        <a
-          href="#top"
-          className="mt-6 text-xs text-river-200 hover:text-white"
+        <button
+          type="button"
+          onClick={goToLandingPage}
+          className="mt-4 w-full rounded-lg border border-slate-300 bg-white px-5 py-3 text-sm font-semibold uppercase tracking-wider text-slate-700 transition-colors hover:bg-slate-50"
         >
-          ← Back to the landing page
-        </a>
+          GO BACK TO LANDING PAGE
+        </button>
       </div>
     </div>
   );
