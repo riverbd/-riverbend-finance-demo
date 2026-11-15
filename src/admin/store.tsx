@@ -71,7 +71,6 @@ export type ContentState = {
       memberIdLabel: string;
       twoFactorLabel: string;
       twoFactorEnabled: string;
-      lastSignInLabel: string;
       changePasswordLabel: string;
       notificationsLabel: string;
       languageLabel: string;
@@ -218,7 +217,6 @@ export const defaultContent: ContentState = {
       memberIdLabel: "Member ID",
       twoFactorLabel: "Two-factor auth",
       twoFactorEnabled: "Enabled",
-      lastSignInLabel: "Last sign-in",
       changePasswordLabel: "Change password",
       notificationsLabel: "Notifications",
       languageLabel: "Language",

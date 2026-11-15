@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useContent } from "./store";
 import type { ContentState } from "./store";
 import { RiverbendLogo } from "../components/icons";
@@ -24,7 +24,6 @@ type Tab =
   | "account-acc"
   | "account-cards"
   | "account-profile"
-  | "account-credentials"
   | "account-send"
   | "account-move"
   | "account-login"
@@ -239,7 +238,6 @@ export default function AdminDashboard() {
             {active === "users" && <UsersEditor />}
             {active === "balances" && <BalancesEditor />}
             {active === "cardholders" && <CardholdersEditor />}
-            {active === "account-credentials" && <CredentialsEditor />}
             {active === "data" && <DataTab />}
           </div>
 
@@ -272,6 +270,8 @@ function Input({
   textarea,
   rows,
   hint,
+  type,
+  autoComplete,
 }: {
   label: string;
   value: string;
@@ -279,6 +279,8 @@ function Input({
   textarea?: boolean;
   rows?: number;
   hint?: string;
+  type?: "text" | "password" | "email";
+  autoComplete?: string;
 }) {
   return (
     <label className="block">
@@ -294,6 +296,8 @@ function Input({
         />
       ) : (
         <input
+          type={type ?? "text"}
+          autoComplete={autoComplete}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/20"
@@ -693,7 +697,6 @@ function ProfileEditor({ draft, onChange }: { draft: ContentState; onChange: (fn
       <div className="grid gap-4 sm:grid-cols-3">
         <Input label="2FA label" value={p.twoFactorLabel} onChange={(v) => set({ twoFactorLabel: v })} />
         <Input label="2FA enabled" value={p.twoFactorEnabled} onChange={(v) => set({ twoFactorEnabled: v })} />
-        <Input label="Last sign-in label" value={p.lastSignInLabel} onChange={(v) => set({ lastSignInLabel: v })} />
       </div>
       <Input label="Change password label" value={p.changePasswordLabel} onChange={(v) => set({ changePasswordLabel: v })} />
       <Input label="Preferences group" value={p.preferencesGroup} onChange={(v) => set({ preferencesGroup: v })} />
@@ -708,182 +711,7 @@ function ProfileEditor({ draft, onChange }: { draft: ContentState; onChange: (fn
   );
 }
 
-/* ---------------- Credentials ---------------- */
-
-function CredentialsEditor() {
-  const { version } = useAuth();
-  const { rows, loading, error: loadError } = useAdminCustomers(version);
-
-  const [drafts, setDrafts] = useState<
-    Record<string, { username: string; password: string; memberId: string; email: string }>
-  >({});
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-
-  useEffect(() => {
-    const init: Record<string, { username: string; password: string; memberId: string; email: string }> = {};
-    rows.forEach((a) => {
-      init[a.id] = {
-        username: a.username ?? "",
-        password: a.password ?? "",
-        memberId: a.memberId ?? "",
-        email: a.email ?? "",
-      };
-    });
-    setDrafts(init);
-  }, [rows]);
-
-  const setField = (userId: string, key: keyof (typeof drafts)[string], value: string) => {
-    setDrafts((d) => ({ ...d, [userId]: { ...d[userId], [key]: value } }));
-  };
-
-  const saveOne = async (userId: string) => {
-    const d = drafts[userId];
-    if (!d) return;
-    setError(null);
-    setNotice(null);
-    if (!d.username.trim() || !d.password.trim()) {
-      setError("Username and password are required.");
-      return;
-    }
-    setBusy(userId);
-    try {
-      await adminSetCredentials(userId, {
-        username: d.username.trim(),
-        password: d.password,
-        memberId: d.memberId.trim() || `MBR-${userId.toUpperCase()}-001`,
-        email: d.email.trim(),
-      });
-      setNotice(
-        `Saved for ${rows.find((a) => a.id === userId)?.fullName ?? userId}. New login: "${d.username.trim()}" with the password you set.`
-      );
-    } catch (e) {
-      setError(e instanceof DatabaseError ? e.message : "Could not save credentials.");
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  return (
-    <div className="space-y-5">
-      <header>
-        <h2 className="text-xl font-semibold tracking-tight text-slate-900">Account · Login credentials</h2>
-        <p className="mt-1 text-sm text-slate-500">
-          Edit username, password, member ID, and email. Changes save to Supabase and apply to every
-          device immediately.
-        </p>
-      </header>
-
-      <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
-        <p className="font-semibold">Demo credentials</p>
-        <p className="mt-1">
-          Passwords are stored as plaintext in <code className="font-mono">customers.demo_password</code>{" "}
-          for this demo. Replace with Supabase Auth before loading real customer data.
-        </p>
-      </div>
-
-      {loading && <p className="text-xs text-slate-500">Loading customers…</p>}
-      {(error || loadError) && (
-        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
-          {error ?? loadError}
-        </div>
-      )}
-      {notice && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
-          {notice}
-        </div>
-      )}
-
-      <div className="space-y-4">
-        {rows.map((a) => {
-          const d = drafts[a.id] ?? { username: "", password: "", memberId: "", email: "" };
-          return (
-            <div key={a.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-semibold text-slate-900">{a.fullName}</p>
-                  <p className="text-[11px] text-slate-500">
-                    <code className="font-mono">{a.id}</code> · current login:{" "}
-                    <code className="font-mono">{a.username}</code>
-                  </p>
-                </div>
-              </div>
-
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <CredentialField
-                  label="Username (used to log in)"
-                  value={d.username}
-                  onChange={(v) => setField(a.id, "username", v)}
-                  placeholder="e.g. alex"
-                />
-                <CredentialField
-                  label="Password (set a new one)"
-                  value={d.password}
-                  onChange={(v) => setField(a.id, "password", v)}
-                  placeholder="Enter new password"
-                  type="password"
-                />
-                <CredentialField
-                  label="Member ID"
-                  value={d.memberId}
-                  onChange={(v) => setField(a.id, "memberId", v)}
-                  placeholder="e.g. MBR-DEMO-1-001"
-                />
-                <CredentialField
-                  label="Email address"
-                  value={d.email}
-                  onChange={(v) => setField(a.id, "email", v)}
-                  placeholder="e.g. alex@riverbend.bank"
-                  type="email"
-                />
-              </div>
-
-              <div className="mt-4 flex justify-end">
-                <button
-                  onClick={() => saveOne(a.id)}
-                  disabled={busy === a.id}
-                  className="inline-flex items-center justify-center rounded-xl bg-river-700 px-4 py-2 text-xs font-semibold text-white hover:bg-river-800 disabled:opacity-60"
-                >
-                  {busy === a.id ? "Saving…" : "Save credentials"}
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function CredentialField({
-  label,
-  value,
-  onChange,
-  placeholder,
-  type,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-  type?: "text" | "password" | "email";
-}) {
-  return (
-    <label className="block">
-      <span className="block text-xs font-semibold uppercase tracking-wider text-slate-500">
-        {label}
-      </span>
-      <input
-        type={type ?? "text"}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder-slate-400 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/20"
-      />
-    </label>
-  );
-}
+/* ---------------- Send / Move ---------------- */
 
 function SendEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (c: ContentState) => ContentState) => void }) {
   const s = draft.account.send;
@@ -978,50 +806,181 @@ function MoveEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (
 /* ---------------- Users ---------------- */
 
 function UsersEditor() {
-  const { version } = useAuth();
-  const { rows, loading, error } = useAdminCustomers(version);
+  const { version, user, refreshUser } = useAuth();
+  const { rows, loading, error: loadError } = useAdminCustomers(version);
+
+  type Draft = { email: string; memberId: string; username: string; password: string };
+
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+  // Fields the admin has typed into but not saved. These survive background
+  // refreshes so a reload can never silently discard an unsaved edit.
+  const dirty = useRef<Record<string, Set<keyof Draft>>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Re-seed the inputs whenever the database rows change so the panels always
+  // reflect what is stored, but keep any field the admin is still editing.
+  useEffect(() => {
+    setDrafts((prev) => {
+      const next: Record<string, Draft> = {};
+      rows.forEach((u) => {
+        const stored: Draft = {
+          email: u.email ?? "",
+          memberId: u.memberId ?? "",
+          username: u.username ?? "",
+          password: u.password ?? "",
+        };
+        const pending = dirty.current[u.id];
+        const keep = prev[u.id];
+        if (!pending || pending.size === 0 || !keep) {
+          next[u.id] = stored;
+          return;
+        }
+        next[u.id] = {
+          email: pending.has("email") ? keep.email : stored.email,
+          memberId: pending.has("memberId") ? keep.memberId : stored.memberId,
+          username: pending.has("username") ? keep.username : stored.username,
+          password: pending.has("password") ? keep.password : stored.password,
+        };
+      });
+      return next;
+    });
+  }, [rows]);
+
+  const setField = (id: string, key: keyof Draft, value: string) => {
+    (dirty.current[id] ??= new Set<keyof Draft>()).add(key);
+    setDrafts((d) => ({ ...d, [id]: { ...d[id], [key]: value } }));
+  };
+
+  const saveOne = async (id: string) => {
+    const d = drafts[id];
+    if (!d) return;
+    setError(null);
+    setNotice(null);
+
+    const email = d.email.trim();
+    const memberId = d.memberId.trim();
+    const username = d.username.trim();
+
+    // Check here so the admin gets a clear message rather than a raw constraint
+    // error from Postgres.
+    if (!email || !email.includes("@")) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    if (!memberId) {
+      setError("Member ID is required.");
+      return;
+    }
+    if (!username) {
+      setError("Username is required.");
+      return;
+    }
+    if (!d.password.trim()) {
+      setError("Password is required.");
+      return;
+    }
+
+    setBusy(id);
+    try {
+      await adminSetCredentials(id, { email, memberId, username, password: d.password });
+      // Saved values now match the database, so stop treating them as pending.
+      dirty.current[id] = new Set<keyof Draft>();
+      // Re-read the customer table; also refresh the session if the admin has
+      // that same customer open in this browser.
+      if (user && user.id === id) await refreshUser();
+      setNotice(`Saved ${rows.find((u) => u.id === id)?.fullName ?? id}.`);
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not save customer details.");
+    } finally {
+      setBusy(null);
+    }
+  };
 
   return (
     <div className="space-y-5">
       <header>
         <h2 className="text-xl font-semibold tracking-tight text-slate-900">Users</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Sample accounts available for the demo login. Read-only view — live from Supabase.
+          Manage customer accounts. Changes save to Supabase and appear on every device.
         </p>
       </header>
 
       {loading && <p className="text-xs text-slate-500">Loading customers…</p>}
-      {error && (
-        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">{error}</div>
+      {(error || loadError) && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+          {error ?? loadError}
+        </div>
+      )}
+      {notice && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
+          {notice}
+        </div>
       )}
 
-      <div className="overflow-hidden rounded-xl border border-slate-200">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
-            <tr>
-              <th className="px-4 py-2">Name</th>
-              <th className="px-4 py-2">Username</th>
-              <th className="px-4 py-2">Email</th>
-              <th className="px-4 py-2 text-right">Checking</th>
-              <th className="px-4 py-2 text-right">Fixed savings</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {rows.map((u) => (
-              <tr key={u.id}>
-                <td className="px-4 py-3 font-medium text-slate-900">{u.fullName}</td>
-                <td className="px-4 py-3 font-mono text-xs text-slate-700">{u.username}</td>
-                <td className="px-4 py-3 text-slate-700">{u.email}</td>
-                <td className="px-4 py-3 text-right font-semibold text-slate-900">
-                  {formatMoney(u.balance.checking)}
-                </td>
-                <td className="px-4 py-3 text-right font-semibold text-slate-900">
-                  {formatMoney(u.balance.savings)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="space-y-5">
+        {rows.map((u) => {
+          const d = drafts[u.id] ?? { email: "", memberId: "", username: "", password: "" };
+          return (
+            <div key={u.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <p className="text-sm font-semibold text-slate-900">{u.fullName}</p>
+                <p className="text-[11px] text-slate-500">
+                  {formatMoney(u.balance.checking + u.balance.savings)} total
+                </p>
+              </div>
+              <p className="mt-0.5 text-[11px] text-slate-400">Customer ID {u.id}</p>
+
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <Input
+                  label="Email address"
+                  type="email"
+                  autoComplete="off"
+                  value={d.email}
+                  onChange={(v) => setField(u.id, "email", v)}
+                  hint="Shown on the customer's profile."
+                />
+                <Input
+                  label="Member ID"
+                  value={d.memberId}
+                  onChange={(v) => setField(u.id, "memberId", v)}
+                  hint="Shown on the customer's profile."
+                />
+                <Input
+                  label="Username"
+                  value={d.username}
+                  onChange={(v) => setField(u.id, "username", v)}
+                  hint="Used to sign in."
+                />
+                <Input
+                  label="Password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={d.password}
+                  onChange={(v) => setField(u.id, "password", v)}
+                  hint="Used to sign in. Type a new value to reset it."
+                />
+              </div>
+
+              <button
+                onClick={() => saveOne(u.id)}
+                disabled={busy === u.id}
+                className="mt-4 inline-flex w-full items-center justify-center rounded-xl bg-river-700 px-5 py-3 text-sm font-semibold text-white hover:bg-river-800 disabled:opacity-60 sm:w-auto"
+              >
+                {busy === u.id ? "Saving…" : `Save ${u.fullName.split(" ")[0]}`}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
+        <p className="font-semibold">Demo credentials</p>
+        <p className="mt-1">
+          Passwords are stored as plaintext in <code className="font-mono">customers.demo_password</code>{" "}
+          for this demo. Replace with Supabase Auth before loading real customer data.
+        </p>
       </div>
     </div>
   );
