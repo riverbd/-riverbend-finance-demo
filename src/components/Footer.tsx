@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { RiverbendLogo } from "./icons";
 import { useContent } from "../admin/store";
+import { DatabaseError, submitContactMessage } from "../account/db";
 
 export default function Footer() {
   const { content, version } = useContent(); // version re-renders on save
@@ -85,44 +87,86 @@ export default function Footer() {
 }
 
 function FooterInquiryForm() {
-  const { content } = useContent();
+  const [state, setState] = useState<"idle" | "sending" | "sent">("idle");
+  const [error, setError] = useState("");
+
+  // This footer form used to console.log and then claim the message was sent.
+  // It now writes to the same contact_messages table the homepage form uses, so
+  // the claim is only made once the row really exists.
+  const onSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (state === "sending") return;
+    const form = e.currentTarget as HTMLFormElement;
+    const data = new FormData(form);
+    const fullName = ((data.get("name") as string) || "").trim();
+    const email = ((data.get("email") as string) || "").trim();
+    const message = ((data.get("message") as string) || "").trim();
+
+    setError("");
+    if (!fullName || !email || !message) {
+      setError("Please fill in your name, email and message.");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+      setError("Please enter a valid email address.");
+      return;
+    }
+
+    setState("sending");
+    try {
+      await submitContactMessage({ fullName, email, message });
+      form.reset();
+      setState("sent");
+    } catch (err) {
+      setError(
+        err instanceof DatabaseError
+          ? err.message
+          : "We couldn't send your message just now. Please try again."
+      );
+      setState("idle");
+    }
+  };
+
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        const form = e.currentTarget as HTMLFormElement;
-        const data = new FormData(form);
-        const name = (data.get("name") as string) || "Anonymous";
-        console.log(`Footer inquiry submitted to ${content.contact.email}:`, {
-          name,
-          message: data.get("message"),
-        });
-        alert(
-          `Thanks ${name}! Your message has been sent to our customer relations team at ${content.contact.email}.`
-        );
-        form.reset();
-      }}
-      className="mt-4 space-y-3"
-    >
+    <form onSubmit={onSubmit} noValidate className="mt-4 space-y-3">
       <input
         name="name"
         type="text"
-        required
         placeholder="Your name"
+        autoComplete="name"
+        className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3 py-2.5 text-sm text-white placeholder-slate-500 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/30"
+      />
+      <input
+        name="email"
+        type="email"
+        placeholder="Your email address"
+        autoComplete="email"
         className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3 py-2.5 text-sm text-white placeholder-slate-500 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/30"
       />
       <textarea
         name="message"
-        required
         rows={3}
         placeholder="How can we help?"
         className="w-full resize-none rounded-xl border border-slate-800 bg-slate-900 px-3 py-2.5 text-sm text-white placeholder-slate-500 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/30"
       />
+
+      {error && (
+        <p role="alert" className="rounded-lg bg-rose-500/15 px-3 py-2 text-xs text-rose-200">
+          {error}
+        </p>
+      )}
+      {state === "sent" && (
+        <p className="rounded-lg bg-emerald-500/15 px-3 py-2 text-xs text-emerald-200">
+          Thanks — your message has been saved for our customer relations team.
+        </p>
+      )}
+
       <button
         type="submit"
-        className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-river-600 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-river-500"
+        disabled={state === "sending"}
+        className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-river-600 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-river-500 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        Send message
+        {state === "sending" ? "Sending…" : "Send message"}
       </button>
     </form>
   );

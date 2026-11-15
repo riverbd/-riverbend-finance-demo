@@ -12,6 +12,12 @@ import {
   fetchAdminCustomers,
 } from "./db";
 import { fetchAdminVerifications } from "./db";
+import {
+  deleteContactMessage,
+  fetchContactMessages,
+  setContactMessageRead,
+} from "./db";
+import type { ContactMessage } from "./db";
 import type { AdminCustomer, AdminVerification } from "./db";
 
 type Tab =
@@ -31,6 +37,7 @@ type Tab =
   | "users"
   | "balances"
   | "cardholders"
+  | "messages"
   | "data";
 
 const tabs: { id: Tab; label: string }[] = [
@@ -50,6 +57,7 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "users", label: "Users" },
   { id: "balances", label: "Balances" },
   { id: "cardholders", label: "Cardholders" },
+  { id: "messages", label: "Messages" },
   { id: "data", label: "Data" },
 ];
 
@@ -239,6 +247,7 @@ export default function AdminDashboard() {
             {active === "users" && <UsersEditor />}
             {active === "balances" && <BalancesEditor />}
             {active === "cardholders" && <CardholdersEditor />}
+            {active === "messages" && <MessagesTab />}
             {active === "data" && <DataTab />}
           </div>
 
@@ -1222,6 +1231,206 @@ function UsersEditor() {
       </div>
     </div>
   );
+}
+
+/* ---------------- Contact messages ---------------- */
+
+/**
+ * Submissions from the homepage and footer contact forms.
+ *
+ * Messages arrive here because the visitor form writes to
+ * public.contact_messages, which the admin reads through a passphrase-gated
+ * function (see migration 005). Unread messages are visually distinct and are
+ * counted in the header, so a new enquiry cannot be missed.
+ */
+function MessagesTab() {
+  const [messages, setMessages] = useState<ContactMessage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const list = await fetchContactMessages(ADMIN_PASSWORD);
+      setMessages(list);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not load messages.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const toggleRead = async (m: ContactMessage) => {
+    setBusy(m.id);
+    setError(null);
+    try {
+      await setContactMessageRead(ADMIN_PASSWORD, m.id, !m.isRead);
+      await load();
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not update the message.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const remove = async (m: ContactMessage) => {
+    setBusy(m.id);
+    setError(null);
+    try {
+      await deleteContactMessage(ADMIN_PASSWORD, m.id);
+      setConfirming(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not delete the message.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const unreadCount = messages.filter((m) => !m.isRead).length;
+
+  return (
+    <div className="space-y-5">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight text-slate-900">Messages</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Enquiries sent through the website contact forms. New messages are highlighted.
+          </p>
+        </div>
+        <span
+          className={
+            "inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold " +
+            (unreadCount > 0 ? "bg-amber-100 text-amber-900" : "bg-slate-100 text-slate-600")
+          }
+        >
+          {unreadCount > 0 ? `${unreadCount} unread` : "All read"}
+        </span>
+      </header>
+
+      {error && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+          {error}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => void load()}
+          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+        >
+          Refresh
+        </button>
+        <span className="text-[11px] text-slate-400">
+          {loading ? "Loading…" : `${messages.length} total`}
+        </span>
+      </div>
+
+      {!loading && messages.length === 0 && (
+        <p className="rounded-xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-500">
+          No messages yet. Anything sent through the contact form will appear here.
+        </p>
+      )}
+
+      <div className="space-y-3">
+        {messages.map((m) => (
+          <article
+            key={m.id}
+            className={
+              "rounded-2xl border p-4 shadow-sm " +
+              (m.isRead ? "border-slate-200 bg-white" : "border-amber-300 bg-amber-50/60")
+            }
+          >
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  {!m.isRead && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900">
+                      <span className="h-1.5 w-1.5 rounded-full bg-amber-700" />
+                      New
+                    </span>
+                  )}
+                  <p className="truncate text-sm font-semibold text-slate-900">{m.fullName}</p>
+                </div>
+                <a
+                  href={`mailto:${m.email}`}
+                  className="mt-0.5 inline-block break-all text-xs text-river-700 hover:text-river-800"
+                >
+                  {m.email}
+                </a>
+              </div>
+              <p className="shrink-0 text-[11px] text-slate-500">{formatMessageDate(m.createdAt)}</p>
+            </div>
+
+            <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-700">
+              {m.message}
+            </p>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-200/70 pt-3">
+              <button
+                onClick={() => void toggleRead(m)}
+                disabled={busy === m.id}
+                className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                {busy === m.id ? "Saving…" : m.isRead ? "Mark as unread" : "Mark as read"}
+              </button>
+
+              {confirming === m.id ? (
+                <>
+                  <button
+                    onClick={() => void remove(m)}
+                    disabled={busy === m.id}
+                    className="rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-60"
+                  >
+                    {busy === m.id ? "Deleting…" : "Confirm delete"}
+                  </button>
+                  <button
+                    onClick={() => setConfirming(null)}
+                    className="rounded-xl px-2 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-700"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setConfirming(m.id)}
+                  className="rounded-xl border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                >
+                  Delete
+                </button>
+              )}
+
+              <a
+                href={`mailto:${m.email}?subject=${encodeURIComponent("Re: your message to Riverbend")}`}
+                className="ml-auto text-xs font-semibold text-river-700 hover:text-river-800"
+              >
+                Reply by email
+              </a>
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Message timestamps: full date and time, since the admin needs both. */
+function formatMessageDate(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 /* ---------------- Balances ---------------- */

@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import TopBar from "./components/TopBar";
 import Hero from "./components/Hero";
+import HomepageSections from "./components/HomepageSections";
 import ContactPage from "./components/ContactPage";
 import LoginPage from "./components/LoginPage";
 import SignupPage from "./components/SignupPage";
@@ -34,12 +35,19 @@ type PageId =
 
 function parseHash(hash: string): PageId {
   const h = hash.replace("#", "");
+
+  // An empty hash is the marketing homepage. It used to resolve to "dashboard",
+  // which made the customer sign-in screen the default landing page for anyone
+  // opening the site — the login form now only appears on #login or when a
+  // banking route is requested without a session.
+  if (h === "" || h === "top" || h === "home") return "home";
+
   if (h === "contact" || h === "contact-page") return "contact";
   if (h === "login" || h === "login-page") return "login";
   if (h === "signup" || h === "signup-page" || h === "enroll") return "signup";
   if (h === "about" || h === "about-page") return "about";
   if (h === "admin") return "admin";
-  if (h === "dashboard" || h === "") return "dashboard";
+  if (h === "dashboard") return "dashboard";
   if (h === "accounts") return "accounts";
   if (h === "cards") return "cards";
   if (h === "profile") return "profile";
@@ -88,7 +96,12 @@ export default function App() {
     <div className="min-h-screen bg-white text-slate-900 antialiased">
       <TopBar onNavigate={navigate} />
       <main>
-        {page === "home" && <Hero onNavigate={navigate} />}
+        {page === "home" && (
+          <>
+            <Hero onNavigate={navigate} />
+            <HomepageSections onNavigate={navigate} />
+          </>
+        )}
         {page === "contact" && <ContactPage />}
         {page === "login" && <LoginPage />}
         {page === "signup" && <SignupPage />}
@@ -164,6 +177,8 @@ function AccountGate({ active }: { active: PageId }): ReactNode {
 
   const handleSignOut = () => {
     signOut();
+    // Land on the marketing homepage. #top now parses to "home" rather than
+    // #dashboard, so the reload no longer drops the visitor on the login form.
     window.location.hash = "top";
     window.location.reload();
   };

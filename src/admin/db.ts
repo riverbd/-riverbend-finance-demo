@@ -363,3 +363,82 @@ export async function fetchAdminVerifications(passphrase: string): Promise<Admin
     attemptsLeft: Number(row.attempts_left ?? 0),
   }));
 }
+
+// ---------------------------------------------------------------------------
+// Contact messages (Milestone 3, part D)
+// ---------------------------------------------------------------------------
+// All three operations are gated by the admin passphrase inside Postgres, and
+// the table itself grants nothing to the browser roles — so these functions are
+// the only way a message is ever read, marked or deleted.
+
+export type ContactMessage = {
+  id: string;
+  fullName: string;
+  email: string;
+  message: string;
+  isRead: boolean;
+  createdAt: string;
+  readAt: string | null;
+};
+
+type ContactMessageRow = {
+  id: string;
+  full_name: string;
+  email: string;
+  message: string;
+  is_read: boolean;
+  created_at: string;
+  read_at: string | null;
+};
+
+/** Every submitted message, newest first. Empty when the passphrase is wrong. */
+export async function fetchContactMessages(passphrase: string): Promise<ContactMessage[]> {
+  const { data, error } = await supabase.rpc("riverbend_admin_contact_messages", {
+    p_passphrase: passphrase,
+  });
+
+  if (error) throw adminError(error, "Loading messages");
+
+  return ((data ?? []) as ContactMessageRow[]).map((row) => ({
+    id: row.id,
+    fullName: row.full_name,
+    email: row.email,
+    message: row.message,
+    isRead: row.is_read,
+    createdAt: row.created_at,
+    readAt: row.read_at,
+  }));
+}
+
+/** Mark one message read or unread. Throws if the row was not updated. */
+export async function setContactMessageRead(
+  passphrase: string,
+  id: string,
+  isRead: boolean
+): Promise<void> {
+  const { data, error } = await supabase.rpc("riverbend_admin_set_message_read", {
+    p_passphrase: passphrase,
+    p_id: id,
+    p_is_read: isRead,
+  });
+
+  if (error) throw adminError(error, "Updating the message");
+  if (Number(data ?? 0) === 0) {
+    throw new DatabaseError(
+      "Updating the message failed: it may have already been deleted."
+    );
+  }
+}
+
+/** Delete one message. Throws if nothing was removed. */
+export async function deleteContactMessage(passphrase: string, id: string): Promise<void> {
+  const { data, error } = await supabase.rpc("riverbend_admin_delete_message", {
+    p_passphrase: passphrase,
+    p_id: id,
+  });
+
+  if (error) throw adminError(error, "Deleting the message");
+  if (Number(data ?? 0) === 0) {
+    throw new DatabaseError("Deleting the message failed: it may already have been deleted.");
+  }
+}

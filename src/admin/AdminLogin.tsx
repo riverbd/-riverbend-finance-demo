@@ -91,17 +91,6 @@ export default function AdminLogin() {
             </button>
           </form>
 
-          <div className="mt-6 rounded-xl border border-white/10 bg-slate-900/60 p-3 text-[11px] leading-relaxed text-river-100">
-            <p className="font-semibold text-white">Admin account</p>
-            <p className="mt-0.5">
-              Email: <code className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-river-200">
-                {ADMIN_EMAIL}
-              </code>
-            </p>
-            <p className="mt-1 text-slate-400">
-              Browser-based demo sign-in is retained for now. Database authentication can be connected later.
-            </p>
-          </div>
         </div>
 
         <a

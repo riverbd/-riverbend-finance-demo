@@ -520,3 +520,51 @@ export async function fetchVerificationStatus(
     attemptsLeft: Number(row.attempts_left ?? 0),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Contact form (Milestone 3, part D)
+// ---------------------------------------------------------------------------
+// The visitor submission is the ONE write in this module that is allowed to
+// happen without a session. It goes straight to the table, which grants INSERT
+// to the anon role and nothing else — the visitor can create a message and can
+// never read one back (see supabase/migrations/005).
+//
+// The caller treats a resolved promise as "the database really has it", which is
+// what lets the success panel be honest.
+
+export type ContactSubmission = {
+  fullName: string;
+  email: string;
+  message: string;
+};
+
+/**
+ * Save a contact message.
+ *
+ * Resolves only when the row is actually in the database; throws DatabaseError
+ * otherwise, so the form never shows a success message for an unsaved message.
+ */
+export async function submitContactMessage(input: ContactSubmission): Promise<void> {
+  const fullName = input.fullName.trim();
+  const email = input.email.trim();
+  const message = input.message.trim();
+
+  // Goes through the SECURITY DEFINER function rather than a direct insert.
+  // The table grants nothing to the anon role, so a visitor cannot read
+  // messages back — the function is the only door, and it returns the new id
+  // so this can honestly report success.
+  const { data, error } = await supabase.rpc("riverbend_submit_contact_message", {
+    p_full_name: fullName,
+    p_email: email,
+    p_message: message,
+  });
+
+  if (error) throw toDatabaseError(error, "Sending your message");
+  // No id back means the row was not created; treat that as a failure rather
+  // than showing a success panel.
+  if (!data) {
+    throw new DatabaseError(
+      "Sending your message failed: the database did not confirm it was saved."
+    );
+  }
+}

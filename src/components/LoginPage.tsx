@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { RiverbendLogo, IconLock, IconShield } from "./icons";
 import { useContent } from "../admin/store";
 import { DatabaseError } from "../account/db";
-import { useAuth, useDemoCustomers } from "../account/auth";
+import { useAuth } from "../account/auth";
 import VerifyCode from "./VerifyCode";
 
 export default function LoginPage() {
@@ -21,9 +21,6 @@ export default function LoginPage() {
   const l = content.login;
   const loginCopy = content.account.login;
   const { signIn } = useAuth();
-  // Sample-account hints come from Supabase; falls back to the local demo list
-  // if the database cannot be read, so this marketing surface still renders.
-  const { demoCustomers } = useDemoCustomers();
   const [showPwd, setShowPwd] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -53,7 +50,7 @@ export default function LoginPage() {
     }
 
     if (!ticket) {
-      setError("Those credentials don't match a sample account. Try the demo accounts shown below.");
+      setError("We couldn't find an account with those details. Check your username and password and try again.");
       return;
     }
 
@@ -62,12 +59,6 @@ export default function LoginPage() {
     setSubmitting(true);
   };
 
-  const fillSample = (username: string, password: string) => {
-    const form = document.querySelector("form") as HTMLFormElement | null;
-    if (!form) return;
-    (form.elements.namedItem("identifier") as HTMLInputElement).value = username;
-    (form.elements.namedItem("password") as HTMLInputElement).value = password;
-  };
 
   if (pending) {
     return (
@@ -187,30 +178,6 @@ export default function LoginPage() {
             >
               Get started with {content.brand.name}
             </a>
-          </div>
-
-          {/* Sample accounts */}
-          <div className="mt-5 rounded-2xl border border-river-200 bg-river-50/50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wider text-river-800">
-              Sample accounts · click to fill
-            </p>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              {demoCustomers.map((a) => (
-                <button
-                  key={a.id}
-                  onClick={() => fillSample(a.username, a.password)}
-                  className="rounded-xl border border-river-200 bg-white p-3 text-left transition-all hover:-translate-y-0.5 hover:shadow-md"
-                >
-                  <p className="text-sm font-semibold text-slate-900">{a.fullName}</p>
-                  <p className="mt-0.5 text-[11px] text-slate-500">
-                    Username: <code className="font-mono">{a.username}</code>
-                  </p>
-                  <p className="text-[11px] text-slate-500">
-                    Password: <code className="font-mono">{a.password}</code>
-                  </p>
-                </button>
-              ))}
-            </div>
           </div>
         </div>
 
