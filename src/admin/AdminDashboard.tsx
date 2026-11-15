@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { useContent } from "./store";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ADMIN_PASSWORD, useContent } from "./store";
 import type { ContentState } from "./store";
 import { RiverbendLogo } from "../components/icons";
 import { useAuth, formatMoney } from "../account/auth";
@@ -11,7 +11,8 @@ import {
   clearAdminCache,
   fetchAdminCustomers,
 } from "./db";
-import type { AdminCustomer } from "./db";
+import { fetchAdminVerifications } from "./db";
+import type { AdminCustomer, AdminVerification } from "./db";
 
 type Tab =
   | "brand"
@@ -805,11 +806,203 @@ function MoveEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (
 
 /* ---------------- Users ---------------- */
 
+/**
+ * Pending six-digit logins, for the admin to read out to customers.
+ *
+ * This is the only admin surface that displays a live code. It polls while the
+ * tab is open so a code appears without a manual refresh, and it shows the
+ * countdown and remaining attempts so the admin can tell a customer whether
+ * their code is still good.
+ */
+function VerificationPanel({ version }: { version: number }) {
+  const { rows } = useAdminCustomers(version);
+  const [rowsByRef, setRowsByRef] = useState<Record<string, AdminVerification>>({});
+  const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+
+  const load = useCallback(async () => {
+    if (!ADMIN_PASSWORD) return;
+    try {
+      const list = await fetchAdminVerifications(ADMIN_PASSWORD);
+      const map: Record<string, AdminVerification> = {};
+      list.forEach((v) => {
+        map[v.clientRef] = v;
+      });
+      setRowsByRef(map);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not load verification codes.");
+    }
+  }, []);
+
+  // Refresh on mount, whenever the customer list changes, and every 10s so the
+  // countdown and any newly started login appear without a manual reload.
+  useEffect(() => {
+    void load();
+    const id = window.setInterval(() => {
+      void load();
+      setTick((t) => t + 1);
+    }, 10000);
+    return () => window.clearInterval(id);
+  }, [load, version]);
+
+  void tick;
+
+  const entries = rows
+    .map((u) => ({ customer: u, verification: rowsByRef[u.id] }))
+    .filter((e) => e.verification);
+
+  const pendingCount = entries.filter((e) => e.verification!.status === "pending").length;
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-900">Login verification</h3>
+          <p className="mt-0.5 text-[11px] text-slate-500">
+            Six-digit codes waiting to be read out to customers. Each expires 5 minutes after it
+            was generated.
+          </p>
+        </div>
+        <span
+          className={
+            "inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold " +
+            (pendingCount > 0
+              ? "bg-amber-100 text-amber-900"
+              : "bg-slate-100 text-slate-600")
+          }
+        >
+          {pendingCount > 0 ? `${pendingCount} pending` : "None pending"}
+        </span>
+      </div>
+
+      {error && (
+        <p className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+          {error}
+        </p>
+      )}
+
+      {entries.length === 0 ? (
+        <p className="mt-3 rounded-xl bg-slate-50 p-3 text-xs text-slate-500">
+          No customer has requested a code yet. Codes appear here as soon as someone signs in.
+        </p>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {entries.map(({ customer, verification }) => (
+            <VerificationRowCard
+              key={customer.id}
+              name={customer.fullName}
+              verification={verification!}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VerificationRowCard({
+  name,
+  verification,
+}: {
+  name: string;
+  verification: AdminVerification;
+}) {
+  const { status, code, secondsLeft, attemptsLeft } = verification;
+
+  const tone =
+    status === "pending"
+      ? "border-amber-200 bg-amber-50"
+      : status === "verified"
+        ? "border-emerald-200 bg-emerald-50"
+        : status === "expired"
+          ? "border-slate-200 bg-slate-50"
+          : "border-rose-200 bg-rose-50";
+
+  const label =
+    status === "pending"
+      ? "Pending"
+      : status === "verified"
+        ? "Completed"
+        : status === "expired"
+          ? "Expired"
+          : "Failed — too many wrong codes";
+
+  const mm = Math.floor(secondsLeft / 60);
+  const ss = String(secondsLeft % 60).padStart(2, "0");
+
+  return (
+    <div className={"rounded-xl border p-3 " + tone}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-semibold text-slate-900">{name}</p>
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+          {label}
+        </span>
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center gap-3">
+        <code
+          className={
+            "select-all rounded-lg px-3 py-1.5 font-mono text-lg font-semibold tracking-[0.3em] " +
+            (status === "pending"
+              ? "bg-white text-slate-900 ring-1 ring-amber-300"
+              : "bg-white/60 text-slate-400 line-through")
+          }
+        >
+          {code}
+        </code>
+        <span className="text-[11px] text-slate-600">
+          {status === "pending" ? (
+            <>
+              Expires in{" "}
+              <span className="font-semibold tabular-nums text-slate-800">
+                {mm}:{ss}
+              </span>
+            </>
+          ) : status === "verified" ? (
+            "Code used — the customer is signed in."
+          ) : status === "expired" ? (
+            "No longer valid. Customer can request a new code."
+          ) : (
+            "Challenge closed for security. Customer must sign in again."
+          )}
+        </span>
+      </div>
+
+      <p className="mt-1.5 text-[11px] text-slate-500">
+        {attemptsLeft} of 5 attempts remaining. Read the code to the customer — never send it by
+        email or text message.
+      </p>
+    </div>
+  );
+}
+
 function UsersEditor() {
   const { version, user, refreshUser } = useAuth();
-  const { rows, loading, error: loadError } = useAdminCustomers(version);
+  // Bumped after every successful save so this table re-reads its own write.
+  // Relying on the session `version` alone was wrong: it only changes when the
+  // edited customer is also the signed-in one, so editing anyone else left the
+  // card header showing the previous name until something else forced a reload.
+  const [reloadKey, setReloadKey] = useState(0);
+  const { rows, loading, error: loadError } = useAdminCustomers(version + reloadKey);
 
-  type Draft = { email: string; memberId: string; username: string; password: string };
+  type Draft = {
+    fullName: string;
+    initials: string;
+    email: string;
+    memberId: string;
+    username: string;
+    password: string;
+  };
+
+  const EMPTY_DRAFT: Draft = {
+    fullName: "",
+    initials: "",
+    email: "",
+    memberId: "",
+    username: "",
+    password: "",
+  };
 
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   // Fields the admin has typed into but not saved. These survive background
@@ -826,6 +1019,8 @@ function UsersEditor() {
       const next: Record<string, Draft> = {};
       rows.forEach((u) => {
         const stored: Draft = {
+          fullName: u.fullName ?? "",
+          initials: u.initials ?? "",
           email: u.email ?? "",
           memberId: u.memberId ?? "",
           username: u.username ?? "",
@@ -838,6 +1033,8 @@ function UsersEditor() {
           return;
         }
         next[u.id] = {
+          fullName: pending.has("fullName") ? keep.fullName : stored.fullName,
+          initials: pending.has("initials") ? keep.initials : stored.initials,
           email: pending.has("email") ? keep.email : stored.email,
           memberId: pending.has("memberId") ? keep.memberId : stored.memberId,
           username: pending.has("username") ? keep.username : stored.username,
@@ -859,12 +1056,24 @@ function UsersEditor() {
     setError(null);
     setNotice(null);
 
+    const fullName = d.fullName.trim().replace(/\s+/g, " ");
+    const initials = d.initials.trim().toUpperCase();
     const email = d.email.trim();
     const memberId = d.memberId.trim();
     const username = d.username.trim();
 
     // Check here so the admin gets a clear message rather than a raw constraint
     // error from Postgres.
+    if (!fullName) {
+      setError("Full name is required.");
+      return;
+    }
+    // Matches the database rule: 1-4 characters. Allows "AM" and also a single
+    // glyph or three letters, which some customers prefer.
+    if (initials.length < 1 || initials.length > 4) {
+      setError("Initials must be 1 to 4 characters.");
+      return;
+    }
     if (!email || !email.includes("@")) {
       setError("Enter a valid email address.");
       return;
@@ -884,11 +1093,19 @@ function UsersEditor() {
 
     setBusy(id);
     try {
-      await adminSetCredentials(id, { email, memberId, username, password: d.password });
+      await adminSetCredentials(id, {
+        fullName,
+        initials,
+        email,
+        memberId,
+        username,
+        password: d.password,
+      });
       // Saved values now match the database, so stop treating them as pending.
       dirty.current[id] = new Set<keyof Draft>();
-      // Re-read the customer table; also refresh the session if the admin has
-      // that same customer open in this browser.
+      // Re-read the customer table so the header, avatar and inputs show the
+      // stored values, then refresh the session if this is the signed-in user.
+      setReloadKey((k) => k + 1);
       if (user && user.id === id) await refreshUser();
       setNotice(`Saved ${rows.find((u) => u.id === id)?.fullName ?? id}.`);
     } catch (e) {
@@ -919,20 +1136,41 @@ function UsersEditor() {
         </div>
       )}
 
+      <VerificationPanel version={version} />
+
       <div className="space-y-5">
         {rows.map((u) => {
-          const d = drafts[u.id] ?? { email: "", memberId: "", username: "", password: "" };
+          const d = drafts[u.id] ?? EMPTY_DRAFT;
           return (
             <div key={u.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <p className="text-sm font-semibold text-slate-900">{u.fullName}</p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-river-50 text-sm font-semibold text-river-800">
+                    {d.initials || u.initials}
+                  </span>
+                  <p className="min-w-0 truncate text-sm font-semibold text-slate-900">
+                    {d.fullName || u.fullName}
+                  </p>
+                </div>
                 <p className="text-[11px] text-slate-500">
                   {formatMoney(u.balance.checking + u.balance.savings)} total
                 </p>
               </div>
-              <p className="mt-0.5 text-[11px] text-slate-400">Customer ID {u.id}</p>
+              <p className="mt-1 text-[11px] text-slate-400">Customer ID {u.id}</p>
 
               <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <Input
+                  label="Full name"
+                  value={d.fullName}
+                  onChange={(v) => setField(u.id, "fullName", v)}
+                  hint="Shown on the dashboard, profile, cards and admin tables."
+                />
+                <Input
+                  label="Initials"
+                  value={d.initials}
+                  onChange={(v) => setField(u.id, "initials", v)}
+                  hint="1 to 4 characters. Shown in the avatar circle."
+                />
                 <Input
                   label="Email address"
                   type="email"
@@ -968,7 +1206,7 @@ function UsersEditor() {
                 disabled={busy === u.id}
                 className="mt-4 inline-flex w-full items-center justify-center rounded-xl bg-river-700 px-5 py-3 text-sm font-semibold text-white hover:bg-river-800 disabled:opacity-60 sm:w-auto"
               >
-                {busy === u.id ? "Saving…" : `Save ${u.fullName.split(" ")[0]}`}
+                {busy === u.id ? "Saving…" : `Save ${(d.fullName || u.fullName).split(" ")[0]}`}
               </button>
             </div>
           );

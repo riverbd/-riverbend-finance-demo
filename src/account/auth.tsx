@@ -15,6 +15,8 @@ import {
   moveMoney as dbMoveMoney,
   sendMoney as dbSendMoney,
   setCardFrozen as dbSetCardFrozen,
+  startLoginVerification,
+  verifyLoginCode,
 } from "./db";
 import type { AccountKind, CustomerAccount } from "./types";
 
@@ -88,6 +90,20 @@ export function useDemoCustomers(): {
  * Auth context
  * ========================================================================== */
 
+/**
+ * What phase 1 hands back. It is deliberately NOT a session: the customer still
+ * has to pass the six-digit step, and `clientRef` here is only used to verify
+ * the code that belongs to it.
+ */
+export type SignInTicket = {
+  challengeId: string;
+  clientRef: string;
+  /** Where the code is waiting for the admin to read out. */
+  displayName: string;
+};
+
+export type PendingChallenge = SignInTicket & { createdAt: number };
+
 type Ctx = {
   /** The signed-in customer, loaded from Supabase. Null when signed out. */
   user: CustomerAccount | null;
@@ -98,8 +114,25 @@ type Ctx = {
   /** Bumps on every successful reload so views can re-read derived state. */
   version: number;
 
-  /** Resolve credentials against Supabase. Throws DatabaseError on DB failure. */
-  signIn: (identifier: string, password: string) => Promise<CustomerAccount | null>;
+  /**
+   * Phase 1 of sign-in. Checks the password, then opens a six-digit challenge.
+   *
+   * Returns the challenge when the password was correct, `null` when the
+   * credentials did not match, and throws DatabaseError if the database itself
+   * failed. IMPORTANT: this does NOT establish a session — `user` stays null and
+   * the banking dashboard stays closed until `completeSignIn` succeeds.
+   */
+  signIn: (identifier: string, password: string) => Promise<SignInTicket | null>;
+  /**
+   * Phase 2. Submits the six-digit code and, only if the database accepts it,
+   * establishes the session. Returns `true` on success, `false` for a wrong or
+   * expired code.
+   */
+  completeSignIn: (code: string) => Promise<boolean>;
+  /** The open challenge while the verification screen is showing, else null. */
+  pendingChallenge: PendingChallenge | null;
+  /** Abandon a pending verification and go back to the password step. */
+  cancelVerification: () => void;
   signOut: () => void;
   refreshUser: () => Promise<void>;
   clearError: () => void;
@@ -143,6 +176,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState<boolean>(() => readSessionPointer() !== null);
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
+  // The open six-digit challenge. Kept in memory only: a reload should start
+  // the login over rather than resume a half-finished verification.
+  const [pendingChallenge, setPendingChallenge] = useState<PendingChallenge | null>(null);
 
   // Guards against a slow response for a customer who already signed out.
   const activeRef = useRef<string | null>(readSessionPointer());
@@ -227,8 +263,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .finally(() => setLoading(false));
   }, []);
 
+  /**
+   * Phase 1: password check, then open a six-digit challenge.
+   *
+   * No session is created here on purpose. The dashboard gate reads `user`, so
+   * leaving it null is what keeps the banking screens shut until the code is
+   * accepted — there is no route to #dashboard that skips `completeSignIn`.
+   */
   const signIn = useCallback(
-    async (identifier: string, password: string): Promise<CustomerAccount | null> => {
+    async (identifier: string, password: string): Promise<SignInTicket | null> => {
       setError(null);
 
       // Throws DatabaseError if the lookup itself fails — the caller shows it.
@@ -236,23 +279,66 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!candidate) return null; // no such customer
       if (!candidate.password || candidate.password !== password) return null; // wrong password
 
+      // Read the account up front so the verification screen can greet the
+      // customer by name and so a missing row fails here rather than after the
+      // code step.
       const account = await fetchCustomerAccount(candidate.clientRef);
       if (!account) return null;
+
+      // The database re-checks the password and, in the same call, invalidates
+      // any challenge this customer already had outstanding.
+      const challengeId = await startLoginVerification(candidate.clientRef, password);
+
+      const ticket: PendingChallenge = {
+        challengeId,
+        clientRef: account.id,
+        displayName: account.fullName,
+        createdAt: Date.now(),
+      };
+      setPendingChallenge(ticket);
+      return ticket;
+    },
+    []
+  );
+
+  /**
+   * Phase 2: submit the code. The session is created only after the database
+   * confirms the code, so a wrong or expired code leaves `user` null and the
+   * customer on the verification screen.
+   */
+  const completeSignIn = useCallback(
+    async (code: string): Promise<boolean> => {
+      const pending = pendingChallenge;
+      if (!pending) return false;
+
+      const confirmedRef = await verifyLoginCode(pending.clientRef, pending.challengeId, code);
+      if (!confirmedRef) return false; // wrong / expired / already used / out of attempts
+
+      const account = await fetchCustomerAccount(confirmedRef);
+      if (!account) return false;
 
       activeRef.current = account.id;
       writeSessionPointer(account.id);
       setUser(account);
+      setPendingChallenge(null);
+      setError(null);
       setVersion((v) => v + 1);
-      return account;
+      return true;
     },
-    []
+    [pendingChallenge]
   );
+
+  const cancelVerification = useCallback(() => {
+    setPendingChallenge(null);
+    setError(null);
+  }, []);
 
   const signOut = useCallback(() => {
     activeRef.current = null;
     writeSessionPointer(null);
     setUser(null);
     setError(null);
+    setPendingChallenge(null);
   }, []);
 
   const freezeCard = useCallback(async (cardId: string, frozen: boolean) => {
@@ -293,6 +379,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         error,
         version,
         signIn,
+        completeSignIn,
+        pendingChallenge,
+        cancelVerification,
         signOut,
         refreshUser,
         clearError,

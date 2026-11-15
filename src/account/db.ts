@@ -432,3 +432,91 @@ export async function fetchDemoCustomers(): Promise<
     password: row.demo_password ?? "",
   }));
 }
+
+// ---------------------------------------------------------------------------
+// Login verification (Milestone 2)
+// ---------------------------------------------------------------------------
+// The six-digit code itself never reaches this module. Everything below is
+// either an opaque challenge id or a status field, which is what lets the
+// waiting screen render without the browser ever being able to read a code.
+//
+//   * start  -> challenge id
+//   * verify -> the customer's client_ref on success, null on any failure
+//   * status -> pending / verified / expired / failed (+ seconds and tries left)
+//
+// All three are SECURITY DEFINER functions in
+// supabase/migrations/004_riverbend_login_verification.sql. The table behind
+// them grants nothing to the anon role, so this module cannot read a code even
+// if it wanted to.
+
+export type LoginVerificationStatus = "pending" | "verified" | "expired" | "failed";
+
+export type VerificationSnapshot = {
+  status: LoginVerificationStatus;
+  /** Seconds until the code stops being accepted. 0 once it has. */
+  secondsLeft: number;
+  /** Wrong-code attempts remaining before the challenge is destroyed. */
+  attemptsLeft: number;
+};
+
+/**
+ * Open a fresh challenge. The password is re-verified inside Postgres, so this
+ * cannot be used to mint challenges for an account the caller cannot sign in
+ * to. Any previous live challenge for the customer is invalidated here.
+ */
+export async function startLoginVerification(
+  clientRef: string,
+  password: string
+): Promise<string> {
+  const { data, error } = await supabase.rpc("riverbend_start_login_verification", {
+    p_client_ref: clientRef,
+    p_password: password,
+  });
+
+  if (error) throw toDatabaseError(error, "Starting verification");
+  if (!data) throw new DatabaseError("Verification could not be started. Please try again.");
+  return data as string;
+}
+
+/**
+ * Submit a code. Returns the customer's client_ref on success and null for a
+ * wrong, expired, already-used or out-of-attempts code — the database
+ * deliberately does not distinguish between those.
+ */
+export async function verifyLoginCode(
+  clientRef: string,
+  challengeId: string,
+  code: string
+): Promise<string | null> {
+  const { data, error } = await supabase.rpc("riverbend_verify_login_code", {
+    p_client_ref: clientRef,
+    p_challenge: challengeId,
+    p_code: code,
+  });
+
+  if (error) throw toDatabaseError(error, "Checking your code");
+  return (data as string | null) ?? null;
+}
+
+/** Status/timing only — the code is not part of this projection. */
+export async function fetchVerificationStatus(
+  challengeId: string
+): Promise<VerificationSnapshot | null> {
+  const { data, error } = await supabase.rpc("riverbend_login_verification_status", {
+    p_challenge: challengeId,
+  });
+
+  if (error) throw toDatabaseError(error, "Checking verification status");
+
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | { status?: string; seconds_left?: number; attempts_left?: number }
+    | null
+    | undefined;
+  if (!row || !row.status) return null;
+
+  return {
+    status: row.status as LoginVerificationStatus,
+    secondsLeft: Number(row.seconds_left ?? 0),
+    attemptsLeft: Number(row.attempts_left ?? 0),
+  };
+}

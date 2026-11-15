@@ -1,11 +1,22 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { RiverbendLogo, IconLock, IconShield } from "./icons";
 import { useContent } from "../admin/store";
 import { DatabaseError } from "../account/db";
 import { useAuth, useDemoCustomers } from "../account/auth";
+import VerifyCode from "./VerifyCode";
 
 export default function LoginPage() {
   const { content, version } = useContent(); // version re-renders on save
+  // Phase 2: once a challenge is open the password form steps aside for the
+  // six-digit screen. Kept here rather than in App so every place that renders
+  // LoginPage (marketing route and the dashboard gate) gets the same behaviour.
+  const pending = useAuth().pendingChallenge;
+
+  // Coming back from the code screen must leave a usable form, not one stuck on
+  // the spinner the transition set.
+  useEffect(() => {
+    if (!pending) setSubmitting(false);
+  }, [pending]);
   void version;
   const l = content.login;
   const loginCopy = content.account.login;
@@ -25,9 +36,12 @@ export default function LoginPage() {
     const pwd = data.get("password") as string;
     setError("");
 
-    let okResult;
+    // Phase 1: password only. On success a six-digit challenge opens and the
+    // verification screen takes over — no session exists yet, so the dashboard
+    // stays closed until the code is accepted.
+    let ticket;
     try {
-      okResult = await signIn(id, pwd);
+      ticket = await signIn(id, pwd);
     } catch (err) {
       // A database failure is NOT the same as a wrong password — say so.
       setError(
@@ -38,16 +52,14 @@ export default function LoginPage() {
       return;
     }
 
-    if (!okResult) {
+    if (!ticket) {
       setError("Those credentials don't match a sample account. Try the demo accounts shown below.");
       return;
     }
 
-    // Animated cycle: spinner for ~900ms before redirecting to dashboard
+    // Brief spinner so the transition to the code screen reads as a step rather
+    // than a flicker.
     setSubmitting(true);
-    setTimeout(() => {
-      window.location.hash = "dashboard";
-    }, 900);
   };
 
   const fillSample = (username: string, password: string) => {
@@ -56,6 +68,19 @@ export default function LoginPage() {
     (form.elements.namedItem("identifier") as HTMLInputElement).value = username;
     (form.elements.namedItem("password") as HTMLInputElement).value = password;
   };
+
+  if (pending) {
+    return (
+      <VerifyCode
+        onVerified={() => {
+          window.location.hash = "dashboard";
+        }}
+        onCancel={() => {
+          window.location.hash = "login";
+        }}
+      />
+    );
+  }
 
   return (
     <section id="login-page" className="relative overflow-hidden py-20 sm:py-28">

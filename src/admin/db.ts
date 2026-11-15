@@ -80,6 +80,8 @@ export type AdminCustomer = {
   /** The app's stable id (customers.client_ref), e.g. "demo-1". */
   id: string;
   fullName: string;
+  /** Admin-editable; never derived from fullName on read. */
+  initials: string;
   username: string;
   email: string;
   memberId: string;
@@ -99,6 +101,7 @@ export type AdminCustomer = {
 type CustomerRow = {
   client_ref: string;
   full_name: string;
+  initials: string;
   username: string;
   email: string;
   member_id: string;
@@ -116,7 +119,7 @@ const num = (v: string | number) => (typeof v === "number" ? v : Number.parseFlo
 export async function fetchAdminCustomers(): Promise<AdminCustomer[]> {
   const { data: customers, error } = await supabase
     .from("customers")
-    .select("client_ref, full_name, username, email, member_id, demo_password")
+    .select("client_ref, full_name, initials, username, email, member_id, demo_password")
     .order("client_ref", { ascending: true })
     .returns<CustomerRow[]>();
 
@@ -159,6 +162,7 @@ export async function fetchAdminCustomers(): Promise<AdminCustomer[]> {
       return {
         id: row.client_ref,
         fullName: row.full_name,
+        initials: row.initials,
         username: row.username,
         email: row.email,
         memberId: row.member_id,
@@ -258,11 +262,20 @@ export async function adminSetCardholderName(
  */
 export async function adminSetCredentials(
   clientRef: string,
-  patch: { username?: string; password?: string; memberId?: string; email?: string }
+  patch: {
+    username?: string;
+    password?: string;
+    memberId?: string;
+    email?: string;
+    fullName?: string;
+    initials?: string;
+  }
 ): Promise<void> {
   const uuid = await uuidOf(clientRef);
 
   const update: Record<string, unknown> = {};
+  if (patch.fullName !== undefined) update.full_name = patch.fullName;
+  if (patch.initials !== undefined) update.initials = patch.initials;
   if (patch.username !== undefined) update.username = patch.username;
   if (patch.email !== undefined) update.email = patch.email;
   if (patch.memberId !== undefined) update.member_id = patch.memberId;
@@ -290,3 +303,63 @@ export async function adminSetCredentials(
  * means writing the original seed values back.
  */
 export const SEEDED_CONTENT_MARKER = "default";
+
+// ---------------------------------------------------------------------------
+// Login verification codes (Milestone 2)
+// ---------------------------------------------------------------------------
+// This is the ONLY place in the browser that ever sees a customer's six-digit
+// code, and it is an admin surface. The database function behind it requires
+// the admin passphrase, which was written to Postgres by migration 004 — the
+// browser value below is what the admin logged in with, not a new secret.
+
+export type AdminVerification = {
+  clientRef: string;
+  challengeId: string;
+  /** The live six-digit code the admin reads out to the customer. */
+  code: string;
+  status: "pending" | "verified" | "expired" | "failed";
+  createdAt: string;
+  expiresAt: string;
+  secondsLeft: number;
+  attempts: number;
+  attemptsLeft: number;
+};
+
+type VerificationRow = {
+  client_ref: string;
+  challenge_id: string;
+  code: string;
+  status: string;
+  created_at: string;
+  expires_at: string;
+  seconds_left: number;
+  attempts: number;
+  attempts_left: number;
+};
+
+/**
+ * Latest verification challenge per customer, including the live code.
+ *
+ * Returns an empty list when the passphrase does not match, which is
+ * indistinguishable from "no customer has ever tried to sign in" — deliberate,
+ * so a caller without the passphrase learns nothing.
+ */
+export async function fetchAdminVerifications(passphrase: string): Promise<AdminVerification[]> {
+  const { data, error } = await supabase.rpc("riverbend_admin_login_verifications", {
+    p_passphrase: passphrase,
+  });
+
+  if (error) throw adminError(error, "Loading verification codes");
+
+  return ((data ?? []) as VerificationRow[]).map((row) => ({
+    clientRef: row.client_ref,
+    challengeId: row.challenge_id,
+    code: row.code,
+    status: row.status as AdminVerification["status"],
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    secondsLeft: Number(row.seconds_left ?? 0),
+    attempts: Number(row.attempts ?? 0),
+    attemptsLeft: Number(row.attempts_left ?? 0),
+  }));
+}
