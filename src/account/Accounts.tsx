@@ -90,8 +90,13 @@ export default function Accounts() {
                     >
                       {t.merchant[0]}
                     </div>
-                    <div>
-                      <p className="text-sm font-medium text-slate-900">{t.merchant}</p>
+                    <div className="min-w-0">
+                      {/* A transfer now carries up to six recipient details, so the
+                          description can be long. The wrapping utilities keep it inside the
+                          row instead of pushing the amount off the edge on a phone. */}
+                      <p className="whitespace-pre-line break-words text-sm font-medium text-slate-900">
+                        {t.merchant}
+                      </p>
                       <p className="text-[11px] text-slate-500">
                         {t.category} · {formatDate(t.date)}
                       </p>

@@ -16,6 +16,8 @@ export default function SendPage() {
   const [recipientAccount, setRecipientAccount] = useState("");
   const [recipientBank, setRecipientBank] = useState("");
   const [swiftCode, setSwiftCode] = useState("");
+  const [routingNumber, setRoutingNumber] = useState("");
+  const [recipientAddress, setRecipientAddress] = useState("");
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
   const [showSuccess, setShowSuccess] = useState(false);
@@ -43,17 +45,33 @@ export default function SendPage() {
       return;
     }
 
-    // The SWIFT/BIC is appended to the transfer description, which is the field
-    // the database already stores for an external transfer. Normalised to the
-    // conventional upper case without spaces; it is left out when blank so the
-    // history reads the same as before for transfers that do not need one.
+    // All six recipient details are recorded in the transfer description, which
+    // is the field the database already stores for an external transfer.
+    //
+    // Format keeps the long-standing readable part first and unchanged —
+    // "Transfer to <name> · <bank>" — with the remaining details in brackets
+    // after it. Empty fields are omitted rather than rendered as blanks, so a
+    // transfer that only fills in the first two reads exactly as it always did.
+    //
+    // SWIFT/BIC is normalised to the conventional upper case without spaces;
+    // routing numbers are left as typed because they vary in length and format
+    // between countries and adding separators could misrepresent them.
     const swift = swiftCode.trim().replace(/\s+/g, "").toUpperCase();
+    const routing = routingNumber.trim();
+    const address = recipientAddress.trim().replace(/\s+/g, " ");
 
     const recipientLabel = recipientName
       ? `${recipientName} · ${recipientBank || "External bank"}`
       : recipientAccount || "External transfer";
 
-    const merchant = `Transfer to ${recipientLabel}${swift ? ` (SWIFT/BIC ${swift})` : ""}`;
+    const extras = [
+      recipientAccount.trim() ? `A/C ${recipientAccount.trim()}` : "",
+      routing ? `Routing ${routing}` : "",
+      swift ? `SWIFT/BIC ${swift}` : "",
+      address ? `Address ${address}` : "",
+    ].filter(Boolean);
+
+    const merchant = `Transfer to ${recipientLabel}${extras.length ? ` (${extras.join(" · ")})` : ""}`;
 
     setError(null);
     setSubmitting(true);
@@ -84,6 +102,8 @@ export default function SendPage() {
     setRecipientAccount("");
     setRecipientBank("");
     setSwiftCode("");
+    setRoutingNumber("");
+    setRecipientAddress("");
     setAmount("");
     setNote("");
   };
@@ -124,6 +144,12 @@ export default function SendPage() {
             placeholder="e.g. Ada Lovelace"
           />
           <Field
+            label={s.recipientBankLabel}
+            value={recipientBank}
+            onChange={setRecipientBank}
+            placeholder="e.g. Barclays, Chase, SEB…"
+          />
+          <Field
             label={s.recipientAccountLabel}
             value={recipientAccount}
             onChange={setRecipientAccount}
@@ -131,10 +157,11 @@ export default function SendPage() {
             inputMode="numeric"
           />
           <Field
-            label={s.recipientBankLabel}
-            value={recipientBank}
-            onChange={setRecipientBank}
-            placeholder="e.g. Barclays, Chase, SEB…"
+            label={s.routingNumberLabel}
+            value={routingNumber}
+            onChange={setRoutingNumber}
+            placeholder="e.g. 021000021"
+            inputMode="numeric"
           />
           <Field
             label={s.swiftCodeLabel}
@@ -143,6 +170,13 @@ export default function SendPage() {
             placeholder="e.g. BARCGB22"
             autoCapitalize="characters"
             spellCheck={false}
+          />
+          <Field
+            label={s.recipientAddressLabel}
+            value={recipientAddress}
+            onChange={setRecipientAddress}
+            placeholder="Street, city, postal code, country"
+            autoComplete="off"
           />
         </div>
 
@@ -227,6 +261,7 @@ function Field({
   inputMode,
   autoCapitalize,
   spellCheck,
+  autoComplete,
 }: {
   label: string;
   value: string;
@@ -235,6 +270,7 @@ function Field({
   inputMode?: "text" | "numeric";
   autoCapitalize?: "none" | "sentences" | "words" | "characters";
   spellCheck?: boolean;
+  autoComplete?: string;
 }) {
   return (
     <div>
@@ -250,6 +286,7 @@ function Field({
         inputMode={inputMode}
         autoCapitalize={autoCapitalize}
         spellCheck={spellCheck}
+        autoComplete={autoComplete}
         className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder-slate-400 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/20"
       />
     </div>
