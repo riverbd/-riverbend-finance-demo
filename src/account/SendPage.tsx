@@ -8,7 +8,10 @@ export default function SendPage() {
   const { content, version } = useContent(); // version re-renders on save
   void version;
   const s = content.account.send;
-  const [from, setFrom] = useState<"checking" | "savings">("checking");
+  // External transfers leave from Checking only. Fixed savings is not offered
+  // here, and riverbend_send() in the database rejects it regardless of what a
+  // caller sends, so this is a UI simplification rather than the only guard.
+  const from = "checking" as const;
   const [recipientName, setRecipientName] = useState("");
   const [recipientAccount, setRecipientAccount] = useState("");
   const [recipientBank, setRecipientBank] = useState("");
@@ -20,18 +23,21 @@ export default function SendPage() {
 
   if (!user) return null;
 
-  const restricted = from === "savings";
+  // An admin can suspend the Checking account. When inactive the database
+  // refuses external transfers, and the form is blocked here so the customer
+  // gets an explanation instead of a failed submission.
+  const checkingInactive = user.status.checking === "inactive";
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (restricted || submitting) return; // hard-block sending from Fixed savings
+    if (checkingInactive || submitting) return; // inactive checking cannot send
     const amt = parseFloat(amount);
     if (!amt || amt <= 0) return;
     if (amt > user.balance[from]) {
       setError(
-        `Insufficient funds — your ${content.account.accounts[
-          from === "checking" ? "checkingLabel" : "savingsLabel"
-        ].toLowerCase()} balance is ${formatMoney(user.balance[from])}.`
+        `Insufficient funds — your ${content.account.accounts.checkingLabel.toLowerCase()} balance is ${formatMoney(
+          user.balance.checking
+        )}.`
       );
       return;
     }
@@ -84,18 +90,17 @@ export default function SendPage() {
           <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500">
             {s.fromLabel}
           </label>
-          <select
-            value={from}
-            onChange={(e) => setFrom(e.target.value as "checking" | "savings")}
-            className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-900 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/20"
-          >
-            <option value="checking">
-              {content.account.accounts.checkingLabel} · {formatMoney(user.balance.checking)}
-            </option>
-            <option value="savings">
-              {content.account.accounts.savingsLabel} · {formatMoney(user.balance.savings)}
-            </option>
-          </select>
+          <div className="mt-2 flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-3">
+            <span className="text-sm font-medium text-slate-900">
+              {content.account.accounts.checkingLabel}
+            </span>
+            <span className="text-sm font-semibold text-slate-700">
+              {formatMoney(user.balance.checking)}
+            </span>
+          </div>
+          <p className="mt-1 text-[11px] text-slate-500">
+            External transfers are sent from your Checking account.
+          </p>
         </div>
 
         <div className="space-y-3 rounded-xl border border-slate-100 bg-slate-50/60 p-4">
@@ -155,10 +160,11 @@ export default function SendPage() {
           />
         </div>
 
-        {restricted && (
+        {checkingInactive && (
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
-            <p className="font-semibold">Heads up — sending from {content.account.accounts.savingsLabel} is not allowed</p>
-            <p className="mt-1">{s.fixedSavingsWarning}</p>
+            <p className="font-semibold">Heads up — Checking account inactive</p>
+            {/* Admin-editable copy: ContentState.account.send.inactiveCheckingWarning */}
+            <p className="mt-1">{s.inactiveCheckingWarning}</p>
           </div>
         )}
 
@@ -171,8 +177,14 @@ export default function SendPage() {
 
         <button
           type="submit"
-          disabled={restricted || submitting}
-          className="mt-2 inline-flex w-full items-center justify-center rounded-xl bg-river-700 px-5 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-river-800 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={checkingInactive || submitting}
+          aria-disabled={checkingInactive || submitting}
+          className={
+            "mt-2 inline-flex w-full items-center justify-center rounded-xl bg-river-700 px-5 py-3 text-sm font-semibold text-white shadow-sm transition-all " +
+            (checkingInactive
+              ? "cursor-not-allowed opacity-40 blur-[1.5px]"
+              : "hover:-translate-y-0.5 hover:bg-river-800 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50")
+          }
         >
           {submitting ? "Sending…" : s.submitLabel}
         </button>

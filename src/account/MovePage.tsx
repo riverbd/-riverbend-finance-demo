@@ -1,12 +1,17 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth, formatMoney } from "./auth";
-import { DatabaseError } from "./db";
+import {
+  DatabaseError,
+  EARLY_WITHDRAWAL_FEE_RATE,
+  earlyWithdrawalFee,
+  earlyWithdrawalNet,
+} from "./db";
 import { useContent } from "../admin/store";
 
 type Account = "checking" | "savings";
 
 export default function MovePage() {
-  const { user, moveMoney } = useAuth();
+  const { user, moveMoney, breakFixedSavings } = useAuth();
   const { content, version } = useContent(); // version re-renders on save
   void version;
   const m = content.account.move;
@@ -17,10 +22,27 @@ export default function MovePage() {
   const [showWarning, setShowWarning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // The fee preview is shown only after the first Continue, and only for a
+  // fixed-savings -> checking break.
+  const [feeShown, setFeeShown] = useState(false);
+
+  // The preview must survive the customer editing the amount — the fee and the
+  // net are derived from `amount` on every render, so they simply recalculate.
+  // It is reappearing that is conditional. What must NOT survive is a change of
+  // accounts: a preview approved for one pair must never be confirmed against
+  // another.
+  useEffect(() => {
+    setFeeShown(false);
+  }, [from, to]);
 
   if (!user) return null;
 
   const restricted = from === "savings" && to === "checking";
+
+  const amt = parseFloat(amount);
+  const validAmount = Number.isFinite(amt) && amt > 0;
+  const fee = validAmount ? earlyWithdrawalFee(amt) : 0;
+  const net = validAmount ? earlyWithdrawalNet(amt) : 0;
 
   const performMove = async () => {
     const amt = parseFloat(amount);
@@ -43,14 +65,25 @@ export default function MovePage() {
     setError(null);
     setSubmitting(true);
     try {
-      // Atomic: both balances and both ledger legs commit as one transaction.
-      await moveMoney({
-        from,
-        to,
-        amount: amt,
-        merchant: `Transfer: ${fromLabel} → ${toLabel}`,
-      });
+      if (restricted) {
+        // Breaking fixed savings. The 5% fee is applied by the database inside
+        // the same locked transaction that moves the money — this call only
+        // says "move this amount"; it cannot influence the fee.
+        await breakFixedSavings({
+          amount: amt,
+          merchant: `Transfer: ${fromLabel} → ${toLabel}`,
+        });
+      } else {
+        // Atomic: both balances and both ledger legs commit as one transaction.
+        await moveMoney({
+          from,
+          to,
+          amount: amt,
+          merchant: `Transfer: ${fromLabel} → ${toLabel}`,
+        });
+      }
       setShowWarning(false);
+      setFeeShown(false);
       setShowSuccess(true);
     } catch (err) {
       setShowWarning(false);
@@ -66,13 +99,38 @@ export default function MovePage() {
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (from === to || restricted || submitting) return;
+    if (from === to || submitting) return;
+
+    // A fixed-savings break is always two steps: the first Continue only
+    // reveals the fee and the net credit, so the customer sees what the early
+    // withdrawal costs before anything moves.
+    if (restricted && !feeShown) {
+      if (!validateBeforeContinue()) return;
+      setFeeShown(true);
+      return;
+    }
+
     performMove();
+  };
+
+  /** Shared pre-flight checks, used by both Continue steps. */
+  const validateBeforeContinue = () => {
+    if (!validAmount) {
+      setError("Enter an amount greater than zero.");
+      return false;
+    }
+    if (amt > user.balance[from]) {
+      setError(`Insufficient funds — ${formatMoney(user.balance[from])} available.`);
+      return false;
+    }
+    setError(null);
+    return true;
   };
 
   const onClose = () => {
     setShowSuccess(false);
     setError(null);
+    setFeeShown(false);
     setAmount("");
   };
 
@@ -158,6 +216,64 @@ export default function MovePage() {
           </div>
         )}
 
+        {/* Fee preview. Appears only after the first Continue, and only for a
+            fixed-savings break. Both fields are read-only and recalculate from
+            the amount above, so the customer can always see what they are
+            about to confirm. */}
+        {restricted && feeShown && (
+          <div className="grid gap-4 rounded-xl border border-sky-200 bg-sky-50/60 p-4 sm:grid-cols-2">
+            <div>
+              <label
+                htmlFor="breaking-fee"
+                className="block text-xs font-semibold uppercase tracking-wider text-sky-900"
+              >
+                {m.breakingFeeLabel}
+              </label>
+              <input
+                id="breaking-fee"
+                type="text"
+                readOnly
+                aria-readonly="true"
+                value={formatMoney(fee)}
+                className="mt-2 w-full cursor-not-allowed rounded-xl border border-sky-200 bg-white px-3 py-3 text-sm font-semibold text-slate-900 outline-none"
+              />
+              <p className="mt-1 text-[11px] text-sky-800">
+                {EARLY_WITHDRAWAL_FEE_RATE * 100}% of the amount.
+              </p>
+            </div>
+            <div>
+              <label
+                htmlFor="withdraw-amount"
+                className="block text-xs font-semibold uppercase tracking-wider text-sky-900"
+              >
+                {m.withdrawAmountLabel}
+              </label>
+              <input
+                id="withdraw-amount"
+                type="text"
+                readOnly
+                aria-readonly="true"
+                value={formatMoney(net)}
+                className="mt-2 w-full cursor-not-allowed rounded-xl border border-sky-200 bg-white px-3 py-3 text-sm font-semibold text-slate-900 outline-none"
+              />
+              <p className="mt-1 text-[11px] text-sky-800">
+                Credited to Checking after the fee.
+              </p>
+            </div>
+
+            {/* The button below both fields confirms the move, not another
+                step. Saying so explicitly stops a second click being read as
+                "next" when it actually moves the money. */}
+            <p className="text-[11px] leading-relaxed text-sky-900 sm:col-span-2">
+              <span className="font-semibold">Final confirmation.</span> Pressing{" "}
+              {m.confirmLabel} will move{" "}
+              <span className="font-semibold">{formatMoney(amt)}</span> out of Fixed savings and
+              credit <span className="font-semibold">{formatMoney(net)}</span> to Checking. The{" "}
+              {formatMoney(fee)} fee is retained.
+            </p>
+          </div>
+        )}
+
         {error && (
           <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs text-rose-800">
             <p className="font-semibold">Transfer failed</p>
@@ -167,11 +283,28 @@ export default function MovePage() {
 
         <button
           type="submit"
-          disabled={from === to || restricted || submitting}
+          disabled={from === to || submitting}
           className="mt-2 inline-flex w-full items-center justify-center rounded-xl bg-river-700 px-5 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-river-800 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {submitting ? "Moving…" : m.submitLabel}
+          {submitting
+            ? "Moving…"
+            : restricted
+              ? feeShown
+                ? m.confirmLabel
+                : m.continueLabel
+              : m.submitLabel}
         </button>
+
+        {restricted && feeShown && (
+          <button
+            type="button"
+            onClick={() => setFeeShown(false)}
+            disabled={submitting}
+            className="inline-flex w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-60"
+          >
+            Back to amount
+          </button>
+        )}
       </form>
 
       {/* Warning modal for restricted move */}

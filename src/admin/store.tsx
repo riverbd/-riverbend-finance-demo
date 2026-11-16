@@ -92,6 +92,8 @@ export type ContentState = {
       successHeadline: string;
       successBody: string;
       fixedSavingsWarning: string;
+      /** Shown on Send when the admin has set the Checking account inactive. */
+      inactiveCheckingWarning: string;
     };
     move: {
       heading: string;
@@ -103,6 +105,14 @@ export type ContentState = {
       successHeadline: string;
       successBody: string;
       restrictionWarning: string;
+      /** Button label before the fee preview is shown. */
+      continueLabel: string;
+      /** Button label on the second step, after the fee preview. */
+      confirmLabel: string;
+      /** Label for the read-only fee field. */
+      breakingFeeLabel: string;
+      /** Label for the read-only net-credit field. */
+      withdrawAmountLabel: string;
     };
     login: {
       submittingLabel: string;
@@ -238,6 +248,8 @@ export const defaultContent: ContentState = {
       successHeadline: "Transfer sent.",
       successBody: "Your transfer is on its way. We'll notify the recipient and update both accounts right away.",
       fixedSavingsWarning: "Fixed savings cannot be sent from directly. Funds in your fixed savings are locked until maturity and can only be moved internally to your Checking account via the Move flow, where the term-break rules apply.",
+      inactiveCheckingWarning:
+        "Your Checking account is currently inactive. External transfers are temporarily unavailable. Please contact our support team for assistance.",
     },
     move: {
       heading: "Move money",
@@ -249,6 +261,10 @@ export const defaultContent: ContentState = {
       successHeadline: "Funds moved.",
       successBody: "Your transfer between accounts is complete and reflected in both balances.",
       restrictionWarning: "Fixed savings funds are locked until maturity. Moving from Fixed savings to Checking will break the term and may incur a penalty. This action cannot be undone.",
+      continueLabel: "Continue",
+      confirmLabel: "Continue",
+      breakingFeeLabel: "Breaking Fee",
+      withdrawAmountLabel: "Withdraw Amount",
     },
     login: {
       submittingLabel: "Signing you in…",

@@ -9,6 +9,9 @@
 
 export type AccountKind = "checking" | "savings";
 
+/** Mirrors bank_accounts.status (migration 006). */
+export type AccountStatus = "active" | "inactive";
+
 export type Card = {
   id: string;
   label: string;
@@ -46,6 +49,12 @@ export type CustomerAccount = {
   memberId: string;
   initials: string;
   balance: { checking: number; savings: number };
+  /**
+   * Admin-controlled status per account. Only `checking` is enforced today:
+   * when it is "inactive" the database refuses external transfers from it.
+   * Internal moves between the customer's own accounts stay available.
+   */
+  status: { checking: AccountStatus; savings: AccountStatus };
   cards: Card[];
   transactions: Transaction[];
 };

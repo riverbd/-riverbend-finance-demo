@@ -442,3 +442,76 @@ export async function deleteContactMessage(passphrase: string, id: string): Prom
     throw new DatabaseError("Deleting the message failed: it may already have been deleted.");
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Account status (migration 006)
+ * ------------------------------------------------------------------------- */
+
+export type AccountStatuses = Record<AccountKind, "active" | "inactive">;
+
+type AccountStatusRow = { customer_id: string; kind: AccountKind; status: string };
+
+/**
+ * Read every customer's per-account status, keyed by the app's customer id.
+ *
+ * Goes through the passphrase-gated function because `status` is deliberately
+ * not writable — and the read is kept behind the same gate so the status of a
+ * customer's account is not visible to the browser roles at large.
+ */
+export async function fetchAccountStatuses(
+  passphrase: string
+): Promise<Record<string, AccountStatuses>> {
+  const [rows, customers] = await Promise.all([
+    supabase.rpc("riverbend_admin_account_statuses", { p_passphrase: passphrase }),
+    supabase.from("customers").select("id, client_ref").returns<{ id: string; client_ref: string }[]>(),
+  ]);
+
+  if (rows.error) throw adminError(rows.error, "Loading account statuses");
+  if (customers.error) throw adminError(customers.error, "Loading account statuses");
+
+  const refById = new Map((customers.data ?? []).map((c) => [c.id, c.client_ref]));
+  const out: Record<string, AccountStatuses> = {};
+
+  for (const row of (rows.data ?? []) as AccountStatusRow[]) {
+    const ref = refById.get(row.customer_id);
+    if (!ref) continue;
+    const bucket = (out[ref] ??= { checking: "active", savings: "active" });
+    bucket[row.kind] = row.status === "inactive" ? "inactive" : "active";
+  }
+
+  return out;
+}
+
+/**
+ * Switch one account between active and inactive.
+ *
+ * The database is the only writer of `status`: migration 006 revokes column
+ * UPDATE on it from the browser roles, so this function is the single path.
+ * Throws when no row was changed, so a silent no-op can never look like a save.
+ */
+export async function setAccountStatus(
+  passphrase: string,
+  clientRef: string,
+  kind: AccountKind,
+  status: "active" | "inactive"
+): Promise<void> {
+  const uuid = await uuidOf(clientRef);
+
+  const { data, error } = await supabase.rpc("riverbend_admin_set_account_status", {
+    p_passphrase: passphrase,
+    p_customer: uuid,
+    p_kind: kind,
+    p_status: status,
+  });
+
+  if (error) throw adminError(error, "Saving account status");
+
+  // The function is passphrase-gated and returns the row count, so 0 means
+  // either a bad passphrase or no matching account. Both are failures.
+  const changed = typeof data === "number" ? data : Number(data ?? 0);
+  if (!changed) {
+    throw new DatabaseError(
+      "Saving account status failed: no account was updated. Your admin session may have expired."
+    );
+  }
+}

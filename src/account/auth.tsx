@@ -13,7 +13,9 @@ import {
   fetchDemoCustomers,
   findLoginCandidate,
   moveMoney as dbMoveMoney,
+  breakFixedSavings as dbBreakFixedSavings,
   sendMoney as dbSendMoney,
+  type BreakResult,
   setCardFrozen as dbSetCardFrozen,
   startLoginVerification,
   verifyLoginCode,
@@ -139,6 +141,10 @@ type Ctx = {
 
   /** Customer banking operations. Each reloads the account on success. */
   freezeCard: (cardId: string, frozen: boolean) => Promise<void>;
+  breakFixedSavings: (params: {
+    amount: number;
+    merchant: string;
+  }) => Promise<BreakResult>;
   sendMoney: (params: {
     from: AccountKind;
     amount: number;
@@ -360,6 +366,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     []
   );
 
+  const breakFixedSavings = useCallback(
+    async (params: { amount: number; merchant: string }) => {
+      const clientRef = activeRef.current;
+      if (!clientRef) throw new DatabaseError("You are not signed in.");
+      const { account, result } = await dbBreakFixedSavings({ clientRef, ...params });
+      setUser(account);
+      setVersion((v) => v + 1);
+      return result;
+    },
+    []
+  );
+
   const moveMoney = useCallback(
     async (params: { from: AccountKind; to: AccountKind; amount: number; merchant: string }) => {
       const clientRef = activeRef.current;
@@ -388,6 +406,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         freezeCard,
         sendMoney,
         moveMoney,
+        breakFixedSavings,
       }}
     >
       {children}

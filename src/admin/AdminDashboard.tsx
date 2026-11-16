@@ -12,6 +12,8 @@ import {
   fetchAdminCustomers,
 } from "./db";
 import { fetchAdminVerifications } from "./db";
+import { fetchAccountStatuses, setAccountStatus } from "./db";
+import type { AccountStatuses } from "./db";
 import {
   deleteContactMessage,
   fetchContactMessages,
@@ -761,6 +763,24 @@ function SendEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (
           />
         </div>
       </div>
+      <div className="rounded-xl border border-rose-200 bg-rose-50/60 p-4">
+        <p className="text-xs font-semibold uppercase tracking-wider text-rose-800">
+          Inactive Checking notice
+        </p>
+        <p className="mt-1 text-[11px] text-rose-700">
+          Shown on the Send page when an admin has switched the customer&rsquo;s Checking account
+          to inactive. Edit the wording here — no code change needed.
+        </p>
+        <div className="mt-3">
+          <Input
+            label="Message shown to the customer"
+            value={s.inactiveCheckingWarning}
+            onChange={(v) => set({ inactiveCheckingWarning: v })}
+            textarea
+            rows={3}
+          />
+        </div>
+      </div>
       <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
         <p className="text-xs font-semibold uppercase tracking-wider text-emerald-800">Success popup</p>
         <div className="mt-3 space-y-3">
@@ -800,6 +820,21 @@ function MoveEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (
             textarea
             rows={3}
           />
+        </div>
+      </div>
+      <div className="rounded-xl border border-sky-200 bg-sky-50/60 p-4">
+        <p className="text-xs font-semibold uppercase tracking-wider text-sky-800">
+          Early withdrawal fee preview
+        </p>
+        <p className="mt-1 text-[11px] text-sky-700">
+          The fee itself is 5% of the amount and is calculated by the database. These are only the
+          labels for the two read-only fields and the buttons either side of the preview.
+        </p>
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
+          <Input label="Breaking fee label" value={m.breakingFeeLabel} onChange={(v) => set({ breakingFeeLabel: v })} />
+          <Input label="Withdraw amount label" value={m.withdrawAmountLabel} onChange={(v) => set({ withdrawAmountLabel: v })} />
+          <Input label="Button before preview" value={m.continueLabel} onChange={(v) => set({ continueLabel: v })} />
+          <Input label="Button after preview" value={m.confirmLabel} onChange={(v) => set({ confirmLabel: v })} />
         </div>
       </div>
       <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
@@ -1021,6 +1056,47 @@ function UsersEditor() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // Checking account status, per customer. Read through the same passphrase gate
+  // the rest of the admin surface uses, and only ever written by the database
+  // function — migration 006 makes the column unwritable from the browser.
+  const [statuses, setStatuses] = useState<Record<string, AccountStatuses>>({});
+  const [statusBusy, setStatusBusy] = useState<string | null>(null);
+
+  const loadStatuses = useCallback(async () => {
+    try {
+      setStatuses(await fetchAccountStatuses(ADMIN_PASSWORD));
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not load account statuses.");
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadStatuses();
+  }, [loadStatuses, reloadKey]);
+
+  const toggleCheckingStatus = async (id: string) => {
+    const current = statuses[id]?.checking ?? "active";
+    const next = current === "active" ? "inactive" : "active";
+    setError(null);
+    setNotice(null);
+    setStatusBusy(id);
+    try {
+      await setAccountStatus(ADMIN_PASSWORD, id, "checking", next);
+      // Re-read rather than assuming, so the badge always shows what is stored.
+      await loadStatuses();
+      const who = rows.find((u2) => u2.id === id)?.fullName ?? id;
+      setNotice(
+        next === "inactive"
+          ? `${who}'s Checking account is now INACTIVE. External transfers from it are blocked.`
+          : `${who}'s Checking account is now ACTIVE. External transfers are available again.`
+      );
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not change the account status.");
+    } finally {
+      setStatusBusy(null);
+    }
+  };
+
   // Re-seed the inputs whenever the database rows change so the panels always
   // reflect what is stored, but keep any field the admin is still editing.
   useEffect(() => {
@@ -1208,6 +1284,52 @@ function UsersEditor() {
                   onChange={(v) => setField(u.id, "password", v)}
                   hint="Used to sign in. Type a new value to reset it."
                 />
+              </div>
+
+              {/* Checking account status — controls external transfers only. */}
+              <div className="mt-4 flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                    Checking account status
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Inactive blocks external transfers from Checking. Moving between the
+                    customer's own accounts still works.
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-3">
+                  <span
+                    className={
+                      "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold uppercase tracking-wider " +
+                      ((statuses[u.id]?.checking ?? "active") === "active"
+                        ? "bg-emerald-100 text-emerald-800"
+                        : "bg-amber-100 text-amber-900")
+                    }
+                    data-testid={`status-${u.id}`}
+                  >
+                    <span
+                      className={
+                        "h-1.5 w-1.5 rounded-full " +
+                        ((statuses[u.id]?.checking ?? "active") === "active"
+                          ? "bg-emerald-600"
+                          : "bg-amber-600")
+                      }
+                    />
+                    {statuses[u.id]?.checking ?? "active"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => toggleCheckingStatus(u.id)}
+                    disabled={statusBusy === u.id}
+                    className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-60"
+                  >
+                    {statusBusy === u.id
+                      ? "Saving…"
+                      : (statuses[u.id]?.checking ?? "active") === "active"
+                        ? "Set inactive"
+                        : "Set active"}
+                  </button>
+                </div>
               </div>
 
               <button

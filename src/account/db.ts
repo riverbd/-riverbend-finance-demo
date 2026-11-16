@@ -1,5 +1,5 @@
 import { supabase } from "../lib/supabase";
-import type { AccountKind, Card, CustomerAccount, Transaction } from "./types";
+import type { AccountKind, AccountStatus, Card, CustomerAccount, Transaction } from "./types";
 
 /**
  * Supabase-backed data access for the customer banking experience.
@@ -104,7 +104,7 @@ type CustomerRow = {
   initials: string;
 };
 
-type AccountRow = { kind: AccountKind; balance: string | number };
+type AccountRow = { kind: AccountKind; balance: string | number; status?: string | null };
 type CardRow = {
   client_ref: string;
   label: string;
@@ -136,8 +136,17 @@ function mapCustomer(
   transactions: TransactionRow[]
 ): CustomerAccount {
   const balance = { checking: 0, savings: 0 };
+  // Defaults to active: a row written before migration 006 has no status, and
+  // treating that as inactive would lock every existing customer out of Send.
+  const status: { checking: AccountStatus; savings: AccountStatus } = {
+    checking: "active",
+    savings: "active",
+  };
   for (const a of accounts) {
-    if (a.kind === "checking" || a.kind === "savings") balance[a.kind] = num(a.balance);
+    if (a.kind === "checking" || a.kind === "savings") {
+      balance[a.kind] = num(a.balance);
+      status[a.kind] = a.status === "inactive" ? "inactive" : "active";
+    }
   }
 
   return {
@@ -149,6 +158,7 @@ function mapCustomer(
     memberId: row.member_id,
     initials: row.initials,
     balance,
+    status,
     cards: cards.map(
       (c): Card => ({
         // The UI keys cards by id; client_ref is its stable per-customer id.
@@ -203,7 +213,7 @@ export async function fetchCustomerAccount(clientRef: string): Promise<CustomerA
   const [accounts, cards, transactions] = await Promise.all([
     supabase
       .from("bank_accounts")
-      .select("kind, balance")
+      .select("kind, balance, status")
       .eq("customer_id", customers.id)
       .returns<AccountRow[]>(),
     supabase
@@ -377,6 +387,83 @@ export async function sendMoney(params: {
   const fresh = await fetchCustomerAccount(params.clientRef);
   if (!fresh) throw new DatabaseError("Your account could not be reloaded after the transfer.");
   return fresh;
+}
+
+/* ---------------------------------------------------------------------------
+ * Fixed savings early withdrawal
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The early withdrawal fee rate, as a fraction of the amount requested.
+ *
+ * Mirrors riverbend_early_withdrawal_fee_rate() in migration 006. This copy
+ * exists only so the Move form can preview the fee as the customer types; the
+ * amount that actually moves is always recomputed by Postgres inside the
+ * locked transaction, so a disagreement here can never change a balance.
+ */
+export const EARLY_WITHDRAWAL_FEE_RATE = 0.05;
+
+/** Fee on breaking fixed savings for `amount`, to 2dp. 5% of the amount. */
+export function earlyWithdrawalFee(amount: number): number {
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+  return Math.round(amount * EARLY_WITHDRAWAL_FEE_RATE * 100) / 100;
+}
+
+/** What actually arrives in checking after the fee, to 2dp. */
+export function earlyWithdrawalNet(amount: number): number {
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+  // Subtract the rounded fee rather than rounding the net, so
+  // fee + net always equals the amount exactly.
+  return Math.round((amount - earlyWithdrawalFee(amount)) * 100) / 100;
+}
+
+export type BreakResult = { fee: number; net: number; transactionId: string };
+
+/**
+ * Break a fixed-savings term: move `amount` out of fixed savings into checking,
+ * keeping 5% of the amount as an early withdrawal fee.
+ *
+ * The full amount leaves fixed savings and only the net is credited to
+ * checking. The fee is never charged twice — it is simply the part of the
+ * amount that does not arrive. All of that happens inside one Postgres
+ * transaction in riverbend_break_fixed_savings(), which is also where the
+ * balance check lives.
+ */
+export async function breakFixedSavings(params: {
+  clientRef: string;
+  amount: number;
+  merchant: string;
+}): Promise<{ account: CustomerAccount; result: BreakResult }> {
+  const customerUuid = await resolveCustomerUuid(params.clientRef);
+
+  const { data, error } = await supabase.rpc("riverbend_break_fixed_savings", {
+    p_customer: customerUuid,
+    p_amount: params.amount,
+    p_merchant: params.merchant,
+  });
+
+  if (error) throw toDatabaseError(error, "Breaking your fixed savings");
+
+  // The function returns TABLE(transaction_id, fee, net), so PostgREST hands
+  // back a one-row array. No row means nothing was moved.
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) {
+    throw new DatabaseError(
+      "The transfer did not complete: the database did not confirm it."
+    );
+  }
+
+  const fresh = await fetchCustomerAccount(params.clientRef);
+  if (!fresh) throw new DatabaseError("Your account could not be reloaded after the transfer.");
+
+  return {
+    account: fresh,
+    result: {
+      fee: num(row.fee),
+      net: num(row.net),
+      transactionId: String(row.transaction_id ?? ""),
+    },
+  };
 }
 
 /**
