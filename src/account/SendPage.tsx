@@ -15,6 +15,7 @@ export default function SendPage() {
   const [recipientName, setRecipientName] = useState("");
   const [recipientAccount, setRecipientAccount] = useState("");
   const [recipientBank, setRecipientBank] = useState("");
+  const [swiftCode, setSwiftCode] = useState("");
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
   const [showSuccess, setShowSuccess] = useState(false);
@@ -42,9 +43,17 @@ export default function SendPage() {
       return;
     }
 
+    // The SWIFT/BIC is appended to the transfer description, which is the field
+    // the database already stores for an external transfer. Normalised to the
+    // conventional upper case without spaces; it is left out when blank so the
+    // history reads the same as before for transfers that do not need one.
+    const swift = swiftCode.trim().replace(/\s+/g, "").toUpperCase();
+
     const recipientLabel = recipientName
       ? `${recipientName} · ${recipientBank || "External bank"}`
       : recipientAccount || "External transfer";
+
+    const merchant = `Transfer to ${recipientLabel}${swift ? ` (SWIFT/BIC ${swift})` : ""}`;
 
     setError(null);
     setSubmitting(true);
@@ -54,7 +63,7 @@ export default function SendPage() {
       await sendMoney({
         from,
         amount: amt,
-        merchant: `Transfer to ${recipientLabel}`,
+        merchant,
       });
       setShowSuccess(true);
     } catch (err) {
@@ -74,6 +83,7 @@ export default function SendPage() {
     setRecipientName("");
     setRecipientAccount("");
     setRecipientBank("");
+    setSwiftCode("");
     setAmount("");
     setNote("");
   };
@@ -125,6 +135,14 @@ export default function SendPage() {
             value={recipientBank}
             onChange={setRecipientBank}
             placeholder="e.g. Barclays, Chase, SEB…"
+          />
+          <Field
+            label={s.swiftCodeLabel}
+            value={swiftCode}
+            onChange={setSwiftCode}
+            placeholder="e.g. BARCGB22"
+            autoCapitalize="characters"
+            spellCheck={false}
           />
         </div>
 
@@ -207,12 +225,16 @@ function Field({
   onChange,
   placeholder,
   inputMode,
+  autoCapitalize,
+  spellCheck,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   inputMode?: "text" | "numeric";
+  autoCapitalize?: "none" | "sentences" | "words" | "characters";
+  spellCheck?: boolean;
 }) {
   return (
     <div>
@@ -226,6 +248,8 @@ function Field({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         inputMode={inputMode}
+        autoCapitalize={autoCapitalize}
+        spellCheck={spellCheck}
         className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder-slate-400 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/20"
       />
     </div>

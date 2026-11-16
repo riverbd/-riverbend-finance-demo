@@ -741,10 +741,11 @@ function SendEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (
         <Input label="From label" value={s.fromLabel} onChange={(v) => set({ fromLabel: v })} />
         <Input label="To label" value={s.toLabel} onChange={(v) => set({ toLabel: v })} />
       </div>
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2">
         <Input label="Recipient name label" value={s.recipientNameLabel} onChange={(v) => set({ recipientNameLabel: v })} />
         <Input label="Recipient account label" value={s.recipientAccountLabel} onChange={(v) => set({ recipientAccountLabel: v })} />
         <Input label="Recipient bank label" value={s.recipientBankLabel} onChange={(v) => set({ recipientBankLabel: v })} />
+        <Input label="SWIFT Code / BIC label" value={s.swiftCodeLabel} onChange={(v) => set({ swiftCodeLabel: v })} />
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <Input label="Amount label" value={s.amountLabel} onChange={(v) => set({ amountLabel: v })} />

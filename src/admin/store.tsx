@@ -86,6 +86,8 @@ export type ContentState = {
       recipientNameLabel: string;
       recipientAccountLabel: string;
       recipientBankLabel: string;
+      /** Label for the SWIFT Code / BIC field. */
+      swiftCodeLabel: string;
       amountLabel: string;
       noteLabel: string;
       submitLabel: string;
@@ -242,6 +244,7 @@ export const defaultContent: ContentState = {
       recipientNameLabel: "Recipient name",
       recipientAccountLabel: "Recipient account number",
       recipientBankLabel: "Recipient bank",
+      swiftCodeLabel: "SWIFT Code / BIC",
       amountLabel: "Amount",
       noteLabel: "Note (optional)",
       submitLabel: "Send",
