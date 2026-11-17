@@ -9,6 +9,7 @@ import {
   effectiveWindow,
   inWindow,
   isFutureMonth,
+  latestNavigableMonth,
   monthLabel,
   monthLabelShort,
   monthOf,
@@ -66,7 +67,9 @@ export default function CheckingActivity({
     [transactions]
   );
 
-  const latest = monthOf(today);
+  // Never past the current month, and never past the newest transaction: a
+  // closed history should not offer months of empty pages after it.
+  const latest = latestNavigableMonth(today, newest || undefined);
 
   // The month the customer is looking at, or null while they have not chosen
   // one. Deriving the default instead of seeding state matters: this component

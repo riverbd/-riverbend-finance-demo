@@ -84,16 +84,23 @@ export function monthsBetween(first: MonthKey, last: MonthKey): MonthKey[] {
 }
 
 /**
- * The newest month the customer may page to: the current month, or the month
- * of their newest transaction if that is somehow later. Either way the next
- * button can never reach a future month, so future-dated rows — which
- * `riverbend_send()` can create via its optional p_occurred_on — stay out of
- * reach of normal navigation.
+ * The newest month the customer may page to.
+ *
+ * Two limits, whichever is earlier:
+ *   * the current month, so the next button can never reach a future month and
+ *     future-dated rows — which `riverbend_send()` can create via its optional
+ *     p_occurred_on — stay out of reach;
+ *   * the month of the newest transaction, so a history that has been closed
+ *     off (Alex's ends in June 2022) does not offer months of empty pages after
+ *     it, and the year selector stops at the last year with activity.
+ *
+ * With no transactions at all the current month is the sensible resting place.
  */
 export function latestNavigableMonth(today: string, newestTransaction?: string): MonthKey {
   const cap = monthOf(today);
-  if (newestTransaction && monthOf(newestTransaction) > cap) return cap;
-  return cap;
+  if (!newestTransaction) return cap;
+  const newest = monthOf(newestTransaction);
+  return newest < cap ? newest : cap;
 }
 
 /** Clamp a month into the range the customer is allowed to look at. */

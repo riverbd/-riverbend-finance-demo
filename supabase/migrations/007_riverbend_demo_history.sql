@@ -4,46 +4,57 @@
 -- Purpose: the demo accounts have been open since 2019-04-12 (Alex) and
 -- 2022-09-30 (Jordan), but their ledgers only start in February 2026. This
 -- migration generates plausible demonstration activity from each customer's
--- real member_since month up to — but never into — the month their existing
--- records begin.
+-- real member_since month up to a per-customer cut-off month, and removes the
+-- eight obsolete seeded rows that sit outside Alex's history window.
+--
+-- HISTORY WINDOWS
+--   demo-1 (Alex)    2019-04-12 .. 2022-06-30  (cut-off: 2022-07-01)
+--   demo-2 (Jordan)  2022-09-30 .. 2026-01-31  (cut-off: 2026-02-01)
+--
+--   The cut-off is the first date a customer must not have activity on. The
+--   generated range stops the month before it, so a generated row can never sit
+--   next to — or be mistaken for — a seeded or user-made one.
 --
 -- WHAT THIS MIGRATION DOES NOT DO
---   * It never updates, deletes or rewrites an existing transaction.
+--   * It never updates or rewrites a transaction.
 --   * It never touches bank_accounts. Balances are left exactly as they are.
---   * It does not decide what "today" means: the newest generated month is
---     derived from each customer's own earliest real row, so re-running this
---     against a database that has since grown still produces no future rows.
+--   * It deletes exactly eight rows, listed by id and client_ref below.
+--   * It does not depend on "today": the newest generated month comes from the
+--     per-customer cut-off, so re-running later cannot produce future rows.
 --
 -- HOW BALANCES AND HISTORY STAY CONSISTENT
 --   bank_accounts.balance is a stored balance that the transfer functions move
 --   when money actually moves (see 002/006). It was never the SUM of the
 --   ledger, and this migration deliberately keeps that true: generated rows
 --   carry historical dates only and the current balance is untouched, so no
---   balance changes by a single cent.
+--   balance changes by a single cent. Within the generated window the running
+--   total never goes negative and the generated legs of an internal transfer
+--   agree with each other.
 --
---   What the generated history does reconcile against is itself. Within the
---   generated window every savings deposit is written twice — a negative leg
---   on checking and a matching positive leg on savings, same day, same
---   description — exactly the shape riverbend_transfer() uses for a real
---   internal move. The two sides therefore always agree, and both account
---   sums are reproducible from the same deterministic generator (see the
---   checks in supabase/migrations/007 verification block and the m7 suite).
+-- FIXED SAVINGS
+--   Generated rows are written to both accounts — checking and fixed savings —
+--   because an internal move between a customer's own accounts is genuinely two
+--   legs. Fixed Savings is nevertheless presented as locked in the customer
+--   interface: src/account/Accounts.tsx renders its locked card before any list
+--   is built, so no savings activity is ever displayed. That behaviour is
+--   unchanged by this migration.
 --
 -- HOW DEMONSTRATION DATA IS IDENTIFIED
---   Every generated row sets is_demo = true. The application labels those rows
---   in the Checking activity list, so generated history is never presented as a
---   genuine financial record. Rows written by the transfer functions keep the
---   column default of false.
+--   Every generated row sets is_demo = true and is labelled in the Checking
+--   activity list. Rows written by the transfer functions keep the default of
+--   false.
 --
 -- IDEMPOTENCE
 --   Each generated row has a deterministic client_ref of
 --   'hist-checking-<YYYY-MM>-<slot>' (or 'hist-savings-…'), which the existing
 --   unique (customer_id, client_ref) constraint plus ON CONFLICT DO NOTHING
---   turns into a no-op on a second run. The whole block is additionally skipped
---   when demonstration history is already present.
+--   turns into a no-op on a second run. The deletion names all eight rows
+--   individually and matches nothing once they are gone, so a re-run deletes
+--   zero rows. Generation is additionally skipped when demonstration history is
+--   already present.
 --
--- Safety: no DROP TABLE, no TRUNCATE, no DELETE, no UPDATE of transaction or
--- balance data. Safe to re-run.
+-- Safety: no TRUNCATE, no DROP TABLE, no UPDATE of transaction or balance data,
+-- and a single narrowly-scoped DELETE. Safe to re-run.
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -64,7 +75,43 @@ create index if not exists transactions_activity_idx
   on public.transactions (customer_id, account_kind, occurred_on desc);
 
 -- ----------------------------------------------------------------------------
--- 2. Generate the history
+-- 2. Retire Alex's eight obsolete seeded rows
+-- ----------------------------------------------------------------------------
+-- Alex's history is required to end on 2022-06-30, but the original seed gave
+-- Alex eight rows dated 2026-02-01 .. 2026-02-08 (client_ref t1..t8, including
+-- one interest row on fixed savings). They are removed here.
+--
+-- This is deliberately narrow. Every row is named by its uuid AND its
+-- client_ref, scoped to demo-1, to a February 2026 date, and to is_demo = false.
+-- Nothing else can match:
+--   * generated history (is_demo = true) is excluded,
+--   * Jordan's t9..t11 belong to a different customer,
+--   * any row the customer creates later has a null or user-supplied client_ref
+--     and dates far from February 2026.
+-- Once the eight rows are gone this statement matches nothing, so re-running
+-- deletes nothing.
+-- ----------------------------------------------------------------------------
+delete from public.transactions t
+ using public.customers c
+ where t.customer_id = c.id
+   and c.client_ref = 'demo-1'
+   and t.is_demo = false
+   and t.client_ref in ('t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8')
+   and t.id in (
+     '30000000-0000-4000-8000-000000000001',
+     '30000000-0000-4000-8000-000000000002',
+     '30000000-0000-4000-8000-000000000003',
+     '30000000-0000-4000-8000-000000000004',
+     '30000000-0000-4000-8000-000000000005',
+     '30000000-0000-4000-8000-000000000006',
+     '30000000-0000-4000-8000-000000000007',
+     '30000000-0000-4000-8000-000000000008'
+   )
+   and t.occurred_on >= date '2026-02-01'
+   and t.occurred_on <  date '2026-03-01';
+
+-- ----------------------------------------------------------------------------
+-- 3. Generate the history
 -- ----------------------------------------------------------------------------
 -- Deterministic pseudo-randomness: md5 of a stable seed string, reduced to a
 -- number in [0,1). Same database in, same history out — nothing here depends on
@@ -81,6 +128,10 @@ $$;
 comment on function public.riverbend_demo_unit(text) is
   'Deterministic [0,1) pseudo-random value used only to build demonstration history (migration 007).';
 
+-- This helper computes values but reads and writes no data of its own. Revoking
+-- the default PUBLIC grant keeps it off the anon/authenticated API surface.
+revoke all on function public.riverbend_demo_unit(text) from public;
+
 do $$
 declare
   v_inserted int;
@@ -91,36 +142,39 @@ begin
     return;
   end if;
 
-  -- The set of (customer, month) pairs to generate, and where each customer's
-  -- real records begin. A customer with no existing records is skipped: there
-  -- is no opening period to extend towards, and inventing one could later
-  -- collide with a genuine first transaction. Both demo customers have records.
-  create temporary table rb_range on commit drop as
-  with cust as (
-    select c.id,
-           c.client_ref,
-           c.member_since,
-           date_trunc('month', c.member_since)::date as open_month,
-           (select date_trunc('month', min(t.occurred_on))::date
-              from public.transactions t
-             where t.customer_id = c.id
-               and not t.is_demo) as cutoff_month
-      from public.customers c
-  ),
-  months as (
-    select cu.id, cu.client_ref, cu.member_since, cu.open_month,
-           g.mon::date as mon,
-           (g.mon::date > cu.open_month) as after_opening
-      from cust cu
-     cross join lateral generate_series(
-                cu.open_month::timestamp,
-                (cu.cutoff_month - interval '1 month')::timestamp,
-                interval '1 month') as g(mon)
-     where cu.cutoff_month is not null
-       and cu.cutoff_month > cu.open_month
+  -- The per-customer history window. `cutoff` is the first date that must have
+  -- no activity; generation stops the month before it. Both windows are
+  -- explicit statements of product intent rather than inferences from the
+  -- current contents of the ledger, so the result is the same in every
+  -- environment and does not drift as real rows are added.
+  create temporary table rb_window on commit drop as
+  with w as (
+    select * from (values
+      ('demo-1', 'Alex Morgan',   date '2022-07-01'),
+      ('demo-2', 'Jordan Reyes',  date '2026-02-01')
+    ) as v(client_ref, label, cutoff)
   )
+  select c.id,
+         c.client_ref,
+         c.member_since,
+         date_trunc('month', c.member_since)::date as open_month,
+         date_trunc('month', w.cutoff)::date          as cutoff_month
+    from public.customers c
+    join w on w.client_ref = c.client_ref
+   where date_trunc('month', w.cutoff) > date_trunc('month', c.member_since);
+
+  create temporary table rb_range on commit drop as
   select m.*, row_number() over (partition by m.id order by m.mon) as n
-    from months m;
+    from (
+      select w.id, w.client_ref, w.member_since, w.open_month,
+             g.mon::date as mon,
+             (g.mon::date > w.open_month) as after_opening
+        from rb_window w
+       cross join lateral generate_series(
+                  w.open_month::timestamp,
+                  (w.cutoff_month - interval '1 month')::timestamp,
+                  interval '1 month') as g(mon)
+    ) m;
 
   -- Each customer's payroll, already present in their seeded rows, plus the
   -- factor that scales every spending pattern to that income so the freelancer
@@ -170,7 +224,7 @@ begin
     (26, 'Travel',        'Vilnius → Riga train',         29.00,   0.00, -1,  6,  6, array[5,9])
   ) as v(slot, category, merchant, base, spread, sgn, day_lo, day_hi, season);
 
-  -- ---- 2a. Spending rows ------------------------------------------------
+  -- ---- 3a. Spending rows ------------------------------------------------
   -- Written first because the opening deposit below is derived from them.
   insert into public.transactions
     (customer_id, client_ref, merchant, category, amount, occurred_on, account_kind, is_demo)
@@ -197,7 +251,7 @@ begin
   get diagnostics v_inserted = row_count;
   v_total := v_total + v_inserted;
 
-  -- ---- 2b. Salary, from the month after opening -------------------------
+  -- ---- 3b. Salary, from the month after opening -------------------------
   -- The opening month has no salary: its opening deposit already covers that
   -- month, so a partial first month cannot double-count income.
   insert into public.transactions
@@ -218,7 +272,7 @@ begin
   get diagnostics v_inserted = row_count;
   v_total := v_total + v_inserted;
 
-  -- ---- 2c. Paired savings credit for every savings transfer -------------
+  -- ---- 3c. Paired savings credit for every savings transfer -------------
   -- Mirrors riverbend_transfer(): a negative leg on checking and a positive leg
   -- of the same amount on savings, same day, same description. Derived from the
   -- generated checking row so the two sides can never disagree.
@@ -239,14 +293,17 @@ begin
      and t.client_ref like 'hist-checking-%'
   on conflict (customer_id, client_ref) do nothing;
 
-  -- ---- 2c-ii. Standing monthly transfer to the joint account -------------
+  get diagnostics v_inserted = row_count;
+  v_total := v_total + v_inserted;
+
+  -- ---- 3c-ii. Standing monthly transfer to the joint account -------------
   -- The one figure that is derived rather than chosen: whatever the generated
   -- months do not spend leaves the account for the household's joint account,
   -- spread evenly across them. That keeps income and outflow balanced, so the
-  -- history neither accumulates an implausible six-figure surplus nor drifts
-  -- into an overdraft. Direction follows the sign of the residual, so a
-  -- customer spending more than they earn is topped up from the joint account
-  -- rather than silently going negative.
+  -- history neither accumulates an implausible surplus nor drifts into an
+  -- overdraft. Direction follows the sign of the residual, so a customer
+  -- spending more than they earn is topped up from the joint account rather
+  -- than silently going negative.
   --
   -- A single leg, exactly as riverbend_send() writes for a transfer away. The
   -- `hist-out-` prefix keeps it out of the paired-leg copy above, which only
@@ -281,7 +338,7 @@ begin
   get diagnostics v_inserted = row_count;
   v_total := v_total + v_inserted;
 
-  -- ---- 2d. Quarterly interest on fixed savings --------------------------
+  -- ---- 3d. Quarterly interest on fixed savings --------------------------
   -- Drifts upwards as the balance grows, so early years look thinner than
   -- recent ones the way a real term deposit would.
   insert into public.transactions
@@ -304,7 +361,7 @@ begin
   get diagnostics v_inserted = row_count;
   v_total := v_total + v_inserted;
 
-  -- ---- 2e. Opening deposits, sized from the generated history -----------
+  -- ---- 3e. Opening deposits, sized from the generated history -----------
   -- Not an arbitrary figure: the deposit is what the generated rows would need
   -- on day one for the running total to stay above zero, plus a fixed float,
   -- rounded up to the nearest 100. A demo history therefore never implies an
@@ -363,19 +420,19 @@ end;
 $$;
 
 -- ----------------------------------------------------------------------------
--- 3. Verification (read-only, informational)
+-- 4. Verification (read-only, informational)
 -- ----------------------------------------------------------------------------
 -- Expected shape on a freshly seeded database:
---   demo-1  checking 2019-04-12 .. 2026-01   savings 2019-04-12 .. 2026-01
+--   demo-1  checking 2019-04-12 .. 2022-06   savings 2019-04-12 .. 2022-06
 --   demo-2  checking 2022-09-30 .. 2026-01   savings 2022-09-30 .. 2026-01
--- No generated row may share or follow the month of an existing record, and no
--- generated row may predate the account.
+-- Alex must have no row at all after 2022-06-30, generated or otherwise.
 -- ----------------------------------------------------------------------------
 do $$
 declare
-  v_overlap  int;
-  v_early    int;
+  v_overlap   int;
+  v_early     int;
   v_overdrawn int;
+  v_late      int;
 begin
   select count(*) into v_overlap
     from public.transactions t
@@ -391,13 +448,6 @@ begin
     join public.customers c on c.id = t.customer_id
    where t.is_demo and t.occurred_on < c.member_since;
 
-  if v_overlap > 0 then
-    raise warning 'RIVERBEND 007: % demonstration rows overlap existing record months', v_overlap;
-  end if;
-  if v_early > 0 then
-    raise warning 'RIVERBEND 007: % demonstration rows predate the account opening', v_early;
-  end if;
-
   -- The running total may never dip below zero: a demo ledger should not imply
   -- an overdraft the customer could not have had.
   select count(*) into v_overdrawn
@@ -410,11 +460,26 @@ begin
     ) x
    where x.running < 0;
 
+  -- A customer whose history has been closed off must have nothing after it.
+  select count(*) into v_late
+    from public.transactions t
+    join public.customers c on c.id = t.customer_id
+   where c.client_ref = 'demo-1' and t.occurred_on > date '2022-06-30';
+
+  if v_overlap > 0 then
+    raise warning 'RIVERBEND 007: % demonstration rows overlap existing record months', v_overlap;
+  end if;
+  if v_early > 0 then
+    raise warning 'RIVERBEND 007: % demonstration rows predate the account opening', v_early;
+  end if;
   if v_overdrawn > 0 then
     raise warning 'RIVERBEND 007: % points where demonstration history dips below zero', v_overdrawn;
   end if;
+  if v_late > 0 then
+    raise warning 'RIVERBEND 007: % demo-1 rows are dated after 2022-06-30', v_late;
+  end if;
 
-  raise notice 'RIVERBEND 007: % demonstration rows total, % overlap, % early, % overdrawn',
-    (select count(*) from public.transactions where is_demo), v_overlap, v_early, v_overdrawn;
+  raise notice 'RIVERBEND 007: % demonstration rows total, % overlap, % early, % overdrawn, % late',
+    (select count(*) from public.transactions where is_demo), v_overlap, v_early, v_overdrawn, v_late;
 end;
 $$;
