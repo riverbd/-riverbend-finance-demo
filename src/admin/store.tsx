@@ -49,6 +49,18 @@ export type ContentState = {
       savingsLabel: string;
       activityHeading: string;
       emptyMessage: string;
+      /** Milestone 5 — activity period navigation. */
+      demoBadge: string;
+      demoNote: string;
+      periodEmpty: string;
+      periodFuture: string;
+      periodSelectLabel: string;
+      rangeStartLabel: string;
+      rangeEndLabel: string;
+      rangeClear: string;
+      prevMonth: string;
+      nextMonth: string;
+      earliestLabel: string;
     };
     cards: {
       heading: string;
@@ -211,6 +223,17 @@ export const defaultContent: ContentState = {
       savingsLabel: "Fixed savings",
       activityHeading: "{account} activity",
       emptyMessage: "No activity yet.",
+      demoBadge: "Demo",
+      demoNote: "Includes demonstration history. Not real financial records.",
+      periodEmpty: "No activity in this period.",
+      periodFuture: "This month hasn't happened yet.",
+      periodSelectLabel: "Period",
+      rangeStartLabel: "From",
+      rangeEndLabel: "To",
+      rangeClear: "Clear dates",
+      prevMonth: "Previous month",
+      nextMonth: "Next month",
+      earliestLabel: "Earliest",
     },
     cards: {
       heading: "Cards",

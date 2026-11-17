@@ -657,6 +657,64 @@ function AccountsEditor({ draft, onChange }: { draft: ContentState; onChange: (f
         value={a.emptyMessage}
         onChange={(v) => set({ emptyMessage: v })}
       />
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Input
+          label="Demonstration badge"
+          value={a.demoBadge}
+          onChange={(v) => set({ demoBadge: v })}
+          hint="Shown on generated demonstration transactions."
+        />
+        <Input
+          label="Demonstration note"
+          value={a.demoNote}
+          onChange={(v) => set({ demoNote: v })}
+        />
+        <Input
+          label="Empty period message"
+          value={a.periodEmpty}
+          onChange={(v) => set({ periodEmpty: v })}
+        />
+        <Input
+          label="Future period message"
+          value={a.periodFuture}
+          onChange={(v) => set({ periodFuture: v })}
+        />
+        <Input
+          label="Month/year picker label"
+          value={a.periodSelectLabel}
+          onChange={(v) => set({ periodSelectLabel: v })}
+        />
+        <Input
+          label="Earliest-month button"
+          value={a.earliestLabel}
+          onChange={(v) => set({ earliestLabel: v })}
+        />
+        <Input
+          label="Previous month (accessible name)"
+          value={a.prevMonth}
+          onChange={(v) => set({ prevMonth: v })}
+        />
+        <Input
+          label="Next month (accessible name)"
+          value={a.nextMonth}
+          onChange={(v) => set({ nextMonth: v })}
+        />
+        <Input
+          label="Date range · from"
+          value={a.rangeStartLabel}
+          onChange={(v) => set({ rangeStartLabel: v })}
+        />
+        <Input
+          label="Date range · to"
+          value={a.rangeEndLabel}
+          onChange={(v) => set({ rangeEndLabel: v })}
+        />
+        <Input
+          label="Clear dates button"
+          value={a.rangeClear}
+          onChange={(v) => set({ rangeClear: v })}
+        />
+      </div>
     </div>
   );
 }

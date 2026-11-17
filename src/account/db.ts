@@ -122,6 +122,8 @@ type TransactionRow = {
   amount: string | number;
   occurred_on: string;
   account_kind: AccountKind;
+  /** Added by migration 007. Absent on older databases → treated as false. */
+  is_demo?: boolean | null;
 };
 
 /** numeric comes back from PostgREST as a string; the UI needs a number. */
@@ -183,6 +185,7 @@ function mapCustomer(
         amount: num(t.amount),
         date: t.occurred_on,
         account: t.account_kind,
+        isDemo: t.is_demo === true,
       })
     ),
   };
@@ -224,11 +227,13 @@ export async function fetchCustomerAccount(clientRef: string): Promise<CustomerA
       .returns<CardRow[]>(),
     supabase
       .from("transactions")
-      .select("id, client_ref, merchant, category, amount, occurred_on, account_kind")
+      .select("id, client_ref, merchant, category, amount, occurred_on, account_kind, is_demo")
       .eq("customer_id", customers.id)
       .order("occurred_on", { ascending: false })
       .order("created_at", { ascending: false })
-      .limit(200)
+      // Generous rather than unbounded: a seven-year demo history is a few
+      // thousand rows, and PostgREST caps an unbounded select anyway.
+      .limit(5000)
       .returns<TransactionRow[]>(),
   ]);
 

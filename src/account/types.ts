@@ -31,6 +31,11 @@ export type Transaction = {
   /** ISO date, YYYY-MM-DD (from `transactions.occurred_on`). */
   date: string;
   account: AccountKind;
+  /**
+   * True for generated demonstration history (migration 007). The activity list
+   * labels these rows so they are never presented as genuine financial records.
+   */
+  isDemo: boolean;
 };
 
 /**

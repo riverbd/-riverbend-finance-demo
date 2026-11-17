@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { useAuth, formatMoney, formatDate } from "./auth";
+import { useAuth, formatMoney } from "./auth";
 import { useContent } from "../admin/store";
+import CheckingActivity from "./CheckingActivity";
 
 export default function Accounts() {
   const { user } = useAuth();
@@ -11,7 +12,6 @@ export default function Accounts() {
   if (!user) return null;
 
   const isSavings = tab === "savings";
-  const txs = isSavings ? [] : user.transactions.filter((t) => t.account === tab);
   const activityLabel = a.activityHeading.replace(
     "{account}",
     tab === "checking" ? a.checkingLabel : a.savingsLabel
@@ -73,63 +73,13 @@ export default function Accounts() {
             </p>
           </div>
         ) : (
-          <div className="mt-2 overflow-hidden rounded-2xl border border-slate-200 bg-white">
-            {txs.length === 0 ? (
-              <p className="px-4 py-6 text-center text-sm text-slate-500">{a.emptyMessage}</p>
-            ) : (
-              txs.map((t, i) => (
-                <div
-                  key={t.id}
-                  className={`flex items-center justify-between px-4 py-3 ${
-                    i !== txs.length - 1 ? "border-b border-slate-100" : ""
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`flex h-9 w-9 items-center justify-center rounded-full text-[11px] font-bold ${cat(t.category)}`}
-                    >
-                      {t.merchant[0]}
-                    </div>
-                    <div className="min-w-0">
-                      {/* A transfer now carries up to six recipient details, so the
-                          description can be long. The wrapping utilities keep it inside the
-                          row instead of pushing the amount off the edge on a phone. */}
-                      <p className="whitespace-pre-line break-words text-sm font-medium text-slate-900">
-                        {t.merchant}
-                      </p>
-                      <p className="text-[11px] text-slate-500">
-                        {t.category} · {formatDate(t.date)}
-                      </p>
-                    </div>
-                  </div>
-                  <p
-                    className={`text-sm font-semibold ${
-                      t.amount >= 0 ? "text-emerald-600" : "text-slate-900"
-                    }`}
-                  >
-                    {t.amount >= 0 ? "+" : ""}
-                    {formatMoney(t.amount)}
-                  </p>
-                </div>
-              ))
-            )}
-          </div>
+          <CheckingActivity
+            transactions={user.transactions}
+            memberSince={user.memberSince}
+            copy={a}
+          />
         )}
       </section>
     </div>
   );
-}
-
-function cat(c: string) {
-  const map: Record<string, string> = {
-    Income: "bg-emerald-100 text-emerald-700",
-    Food: "bg-amber-100 text-amber-700",
-    Groceries: "bg-violet-100 text-violet-700",
-    Transfer: "bg-river-100 text-river-700",
-    Subscriptions: "bg-rose-100 text-rose-700",
-    Travel: "bg-sky-100 text-sky-700",
-    Health: "bg-pink-100 text-pink-700",
-    Software: "bg-indigo-100 text-indigo-700",
-  };
-  return map[c] ?? "bg-slate-100 text-slate-700";
 }
