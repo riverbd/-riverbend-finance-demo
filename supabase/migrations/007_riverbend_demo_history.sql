@@ -53,9 +53,28 @@
 --   zero rows. Generation is additionally skipped when demonstration history is
 --   already present.
 --
+-- TRANSACTIONALITY
+--   The file opens with an explicit BEGIN and closes with COMMIT, so every
+--   statement — the delete and all inserts included — is one unit: if anything
+--   fails, nothing is applied. The generation also runs inside a single
+--   PL/pgSQL DO block, which Postgres treats as one atomic statement on its own,
+--   so the delete and the inserts can never be split even if a runner strips the
+--   BEGIN/COMMIT. The temporary tables are ON COMMIT PRESERVE ROWS and are
+--   written and read only inside that block; they fall back to session scope if
+--   a runner wraps this file in a transaction of its own (an ON COMMIT DROP
+--   table would be destroyed at the first statement boundary in that case).
+--
+--   The BEGIN/COMMIT lines exist for the SQL Editor. DDL here is transactional
+--   in Postgres, so nothing in this file needs to run outside a transaction. If
+--   you apply it with a CLI that manages transactions itself (e.g. `supabase db
+--   push`), drop those two lines — the BEGIN then just "nests" and the COMMIT
+--   closes the outer transaction early, which is undesirable.
+--
 -- Safety: no TRUNCATE, no DROP TABLE, no UPDATE of transaction or balance data,
 -- and a single narrowly-scoped DELETE. Safe to re-run.
 -- ============================================================================
+
+begin;
 
 -- ----------------------------------------------------------------------------
 -- 1. Mark generated history
@@ -147,7 +166,7 @@ begin
   -- explicit statements of product intent rather than inferences from the
   -- current contents of the ledger, so the result is the same in every
   -- environment and does not drift as real rows are added.
-  create temporary table rb_window on commit drop as
+  create temporary table rb_window on commit preserve rows as
   with w as (
     select * from (values
       ('demo-1', 'Alex Morgan',   date '2022-07-01'),
@@ -163,7 +182,7 @@ begin
     join w on w.client_ref = c.client_ref
    where date_trunc('month', w.cutoff) > date_trunc('month', c.member_since);
 
-  create temporary table rb_range on commit drop as
+  create temporary table rb_range on commit preserve rows as
   select m.*, row_number() over (partition by m.id order by m.mon) as n
     from (
       select w.id, w.client_ref, w.member_since, w.open_month,
@@ -179,7 +198,7 @@ begin
   -- Each customer's payroll, already present in their seeded rows, plus the
   -- factor that scales every spending pattern to that income so the freelancer
   -- on 1,850 is not charged the 3,200 salary's rent.
-  create temporary table rb_income on commit drop as
+  create temporary table rb_income on commit preserve rows as
   select * from (values
     ('demo-1', 'Payroll · Northwind Group', 3200.00,  42.00, 1.000000),
     ('demo-2', 'Payroll · Freelance',       1850.00, 240.00, 0.578125)
@@ -189,7 +208,7 @@ begin
   -- a spend can never come out as a credit. Days stay within 1..28 so a
   -- generated row is always inside its own month, and `season` restricts a
   -- pattern to the months it plausibly happens in.
-  create temporary table rb_tpl on commit drop as
+  create temporary table rb_tpl on commit preserve rows as
   select * from (values
     -- Housing and the bills that come with it.
     ( 1, 'Housing',       'Rent · Vilnius apartment',    950.00,   0.00, -1,  3,  3, null::int[]),
@@ -483,3 +502,5 @@ begin
     (select count(*) from public.transactions where is_demo), v_overlap, v_early, v_overdrawn, v_late;
 end;
 $$;
+
+commit;
