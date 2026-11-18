@@ -1,5 +1,6 @@
 import { useAuth, formatMoney, formatDate } from "./auth";
 import { useContent } from "../admin/store";
+import { ACCOUNT_IDENTIFIER } from "./accountIds";
 import {
   IconArrowUpRight,
   IconArrowDownLeft,
@@ -10,7 +11,14 @@ import {
 
 type GoTarget = "accounts" | "cards" | "profile" | "send" | "move";
 
-export default function Dashboard({ onGoTo }: { onGoTo: (p: GoTarget) => void }) {
+export default function Dashboard({
+  onGoTo,
+  onSeeAllActivity,
+}: {
+  onGoTo: (p: GoTarget) => void;
+  /** Jump straight to the full ledger, skipping the account cards. */
+  onSeeAllActivity: () => void;
+}) {
   const { user } = useAuth();
   const { content, version } = useContent(); // version re-renders on save
   void version;
@@ -80,7 +88,7 @@ export default function Dashboard({ onGoTo }: { onGoTo: (p: GoTarget) => void })
           <p className="mt-1 text-base font-semibold text-slate-900">
             {formatMoney(user.balance.checking)}
           </p>
-          <p className="mt-0.5 text-[10px] text-slate-400">•••• 4218</p>
+          <p className="mt-0.5 text-[10px] text-slate-400">{ACCOUNT_IDENTIFIER.checking}</p>
         </button>
         <button
           onClick={() => onGoTo("accounts")}
@@ -90,7 +98,7 @@ export default function Dashboard({ onGoTo }: { onGoTo: (p: GoTarget) => void })
           <p className="mt-1 text-base font-semibold text-slate-900">
             {formatMoney(user.balance.savings)}
           </p>
-          <p className="mt-0.5 text-[10px] text-slate-400">•••• 1147</p>
+          <p className="mt-0.5 text-[10px] text-slate-400">{ACCOUNT_IDENTIFIER.savings}</p>
         </button>
       </div>
 
@@ -126,7 +134,8 @@ export default function Dashboard({ onGoTo }: { onGoTo: (p: GoTarget) => void })
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold text-slate-900">{dash.recentHeading}</h3>
           <button
-            onClick={() => onGoTo("accounts")}
+            onClick={onSeeAllActivity}
+            data-testid="home-see-all"
             className="text-xs font-medium text-river-700 hover:text-river-800"
           >
             {dash.recentSeeAll}
@@ -146,8 +155,13 @@ export default function Dashboard({ onGoTo }: { onGoTo: (p: GoTarget) => void })
                 >
                   {t.merchant[0]}
                 </div>
-                <div>
-                  <p className="text-sm font-medium text-slate-900">{t.merchant}</p>
+                <div className="min-w-0">
+                  {/* A transfer now carries up to six recipient details, so the
+                      description can be long. The wrapping utilities keep it inside the
+                      row instead of pushing the amount off the edge on a phone. */}
+                  <p className="whitespace-pre-line break-words text-sm font-medium text-slate-900">
+                    {t.merchant}
+                  </p>
                   <p className="text-[11px] text-slate-500">
                     {t.category} · {formatDate(t.date)}
                   </p>

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useContent } from "../admin/store";
+import { DatabaseError, submitContactMessage } from "../account/db";
 
 export default function ContactPage() {
   const { content, version } = useContent(); // version re-renders on save
@@ -7,6 +8,60 @@ export default function ContactPage() {
   const c = content.contact;
   const [submitted, setSubmitted] = useState(false);
   const [name, setName] = useState("");
+  const [values, setValues] = useState({ fullName: "", email: "", message: "" });
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [formError, setFormError] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const setValue = (key: "fullName" | "email" | "message", value: string) => {
+    setValues((v) => ({ ...v, [key]: value }));
+    // Clear this field's complaint as soon as the visitor edits it, so the form
+    // is not nagging about something they have already fixed.
+    setFieldErrors((e) => (e[key] ? { ...e, [key]: "" } : e));
+  };
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (sending) return;
+
+    setFormError("");
+
+    const fullName = values.fullName.trim();
+    const email = values.email.trim();
+    const message = values.message.trim();
+
+    // Required-field and format checks. The same rules exist in Postgres; these
+    // run first purely so the visitor gets a clear message next to the field.
+    const errors: Record<string, string> = {};
+    if (!fullName) errors.fullName = "Please enter your full name.";
+    if (!email) errors.email = "Please enter your email address.";
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email))
+      errors.email = "Please enter a valid email address, like name@example.com.";
+    if (!message) errors.message = "Please write a message.";
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      return;
+    }
+
+    setSending(true);
+    try {
+      // Only a resolved promise means the row is really stored. Anything else
+      // throws and lands in the catch below — never in the success panel.
+      await submitContactMessage({ fullName, email, message });
+      setName(fullName.split(" ")[0] || fullName);
+      setSubmitted(true);
+      setValues({ fullName: "", email: "", message: "" });
+      setFieldErrors({});
+    } catch (err) {
+      setFormError(
+        err instanceof DatabaseError
+          ? err.message
+          : "We couldn't send your message just now. Please try again, or email us directly."
+      );
+    } finally {
+      setSending(false);
+    }
+  };
 
   return (
     <section id="contact-page" className="relative overflow-hidden py-20 sm:py-28">
@@ -88,20 +143,8 @@ export default function ContactPage() {
 
           <div className="lg:col-span-3">
             <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                const data = new FormData(e.currentTarget);
-                const n = (data.get("name") as string) || "Friend";
-                setName(n);
-                console.log(`Contact form submitted → POST /api/contact (forwards to ${c.email}):`, {
-                  name: n,
-                  email: data.get("email"),
-                  reason: data.get("reason"),
-                  message: data.get("message"),
-                });
-                setSubmitted(true);
-                (e.currentTarget as HTMLFormElement).reset();
-              }}
+              onSubmit={handleSubmit}
+              noValidate
               className="rounded-3xl border border-slate-100 bg-white p-6 shadow-sm sm:p-8"
             >
               {submitted ? (
@@ -114,45 +157,71 @@ export default function ContactPage() {
                   <p className="mt-1 text-sm text-slate-500">{c.formIntro}</p>
 
                   <div className="mt-6 grid gap-4 sm:grid-cols-2">
-                    <Field label="Your name" name="name" type="text" required />
-                    <Field label="Email address" name="email" type="email" required />
-                  </div>
-
-                  <div className="mt-4">
-                    <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Reason for contact
-                    </label>
-                    <select
-                      name="reason"
-                      required
-                      defaultValue=""
-                      className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-900 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/20"
-                    >
-                      <option value="" disabled>Select a reason</option>
-                      {c.reasons.map((r) => (
-                        <option key={r} value={r}>{r}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="mt-4">
-                    <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Your message
-                    </label>
-                    <textarea
-                      name="message"
-                      required
-                      rows={5}
-                      placeholder="Tell us what's on your mind…"
-                      className="mt-2 w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-900 placeholder-slate-400 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/20"
+                    <Field
+                      label="Full name"
+                      name="fullName"
+                      type="text"
+                      autoComplete="name"
+                      placeholder="Your full name"
+                      value={values.fullName}
+                      error={fieldErrors.fullName}
+                      onChange={(v) => setValue("fullName", v)}
+                    />
+                    <Field
+                      label="Email address"
+                      name="email"
+                      type="email"
+                      autoComplete="email"
+                      placeholder="you@example.com"
+                      value={values.email}
+                      error={fieldErrors.email}
+                      onChange={(v) => setValue("email", v)}
                     />
                   </div>
 
+                  <div className="mt-4">
+                    <label
+                      htmlFor="contact-message"
+                      className="block text-xs font-semibold uppercase tracking-wider text-slate-500"
+                    >
+                      Message
+                    </label>
+                    <textarea
+                      id="contact-message"
+                      name="message"
+                      rows={5}
+                      placeholder="Tell us what's on your mind…"
+                      value={values.message}
+                      onChange={(e) => setValue("message", e.target.value)}
+                      aria-invalid={fieldErrors.message ? true : undefined}
+                      className={
+                        "mt-2 w-full resize-none rounded-xl border bg-white px-3 py-3 text-sm text-slate-900 placeholder-slate-400 outline-none transition-colors focus:ring-2 " +
+                        (fieldErrors.message
+                          ? "border-rose-300 focus:border-rose-400 focus:ring-rose-500/20"
+                          : "border-slate-200 focus:border-river-400 focus:ring-river-500/20")
+                      }
+                    />
+                    {fieldErrors.message && (
+                      <p className="mt-1 text-xs text-rose-600">{fieldErrors.message}</p>
+                    )}
+                  </div>
+
+                  {formError && (
+                    <div
+                      role="alert"
+                      className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs leading-relaxed text-rose-800"
+                    >
+                      <p className="font-semibold">Your message was not sent.</p>
+                      <p className="mt-1">{formError}</p>
+                    </div>
+                  )}
+
                   <button
                     type="submit"
-                    className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-river-700 px-5 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-river-800 hover:shadow-lg"
+                    disabled={sending}
+                    className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-river-700 px-5 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-river-800 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Send message
+                    {sending ? "Sending…" : "Send message"}
                   </button>
                   <p className="mt-3 text-center text-xs text-slate-400">
                     Your message goes directly to our customer relations team at{" "}
@@ -168,18 +237,51 @@ export default function ContactPage() {
   );
 }
 
-function Field({ label, name, type, required }: { label: string; name: string; type: string; required?: boolean }) {
+function Field({
+  label,
+  name,
+  type,
+  value,
+  onChange,
+  error,
+  placeholder,
+  autoComplete,
+}: {
+  label: string;
+  name: string;
+  type: string;
+  value: string;
+  onChange: (v: string) => void;
+  error?: string;
+  placeholder?: string;
+  autoComplete?: string;
+}) {
+  const id = `contact-${name}`;
   return (
     <div>
-      <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500">
+      <label
+        htmlFor={id}
+        className="block text-xs font-semibold uppercase tracking-wider text-slate-500"
+      >
         {label}
       </label>
       <input
+        id={id}
         name={name}
         type={type}
-        required={required}
-        className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-900 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/20"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        autoComplete={autoComplete}
+        aria-invalid={error ? true : undefined}
+        className={
+          "mt-2 w-full rounded-xl border bg-white px-3 py-3 text-sm text-slate-900 placeholder-slate-400 outline-none transition-colors focus:ring-2 " +
+          (error
+            ? "border-rose-300 focus:border-rose-400 focus:ring-rose-500/20"
+            : "border-slate-200 focus:border-river-400 focus:ring-river-500/20")
+        }
       />
+      {error && <p className="mt-1 text-xs text-rose-600">{error}</p>}
     </div>
   );
 }
@@ -194,8 +296,8 @@ function SubmittedState({ name, onReset }: { name: string; onReset: () => void }
       </div>
       <h3 className="mt-4 text-xl font-semibold text-slate-900">Message sent, {name}.</h3>
       <p className="mt-2 max-w-md text-sm text-slate-500">
-        Thanks for reaching out — our customer relations team has received your
-        message and will respond within one business day.
+        Thanks for reaching out — your message has been saved and our customer
+        relations team can now see it in the admin dashboard.
       </p>
       <button
         onClick={onReset}

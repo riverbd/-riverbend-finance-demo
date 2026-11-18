@@ -1,10 +1,30 @@
-import { useEffect, useState } from "react";
-import { useContent } from "./store";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ADMIN_PASSWORD, useContent } from "./store";
 import type { ContentState } from "./store";
 import { RiverbendLogo } from "../components/icons";
-import { getSampleAccounts, readAccounts, useAuth, formatMoney } from "../account/auth";
+import { useAuth, formatMoney } from "../account/auth";
+import { DatabaseError } from "../account/db";
+import {
+  adminSetBalance,
+  adminSetCardholderName,
+  adminSetCredentials,
+  clearAdminCache,
+  fetchAdminCustomers,
+} from "./db";
+import { fetchAdminVerifications } from "./db";
+import { fetchAccountStatuses, setAccountStatus } from "./db";
+import type { AccountStatuses } from "./db";
+import {
+  deleteContactMessage,
+  fetchContactMessages,
+  setContactMessageRead,
+} from "./db";
+import type { ContactMessage } from "./db";
+import { deleteAdminTransaction, editAdminTransaction, fetchAdminTransactions } from "./db";
+import type { AdminTransaction, AdminCustomer, AdminVerification } from "./db";
 
 type Tab =
+  | "brand"
   | "hero"
   | "contact"
   | "about"
@@ -14,15 +34,18 @@ type Tab =
   | "account-acc"
   | "account-cards"
   | "account-profile"
-  | "account-credentials"
   | "account-send"
   | "account-move"
+  | "account-login"
   | "users"
   | "balances"
   | "cardholders"
+  | "transactions"
+  | "messages"
   | "data";
 
 const tabs: { id: Tab; label: string }[] = [
+  { id: "brand", label: "Brand" },
   { id: "hero", label: "Landing · Hero" },
   { id: "contact", label: "Landing · Contact" },
   { id: "about", label: "Landing · About" },
@@ -34,14 +57,85 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "account-profile", label: "Account · Profile" },
   { id: "account-send", label: "Account · Send" },
   { id: "account-move", label: "Account · Move" },
+  { id: "account-login", label: "Account · Login copy" },
   { id: "users", label: "Users" },
   { id: "balances", label: "Balances" },
   { id: "cardholders", label: "Cardholders" },
+  { id: "transactions", label: "Transactions" },
+  { id: "messages", label: "Messages" },
   { id: "data", label: "Data" },
 ];
 
+/**
+ * An ISO date (`2026-11-16`) as the MM/DD/YY the edit form shows.
+ *
+ * Parsed by hand rather than through `Date`, which would shift the day across a
+ * timezone boundary for anyone west of UTC.
+ */
+export function toUsDate(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return "";
+  return `${m[2]}/${m[3]}/${m[1].slice(2)}`;
+}
+
+/** MM/DD/YY (or MM/DD/YYYY) back to ISO, or null when it is not a real date. */
+export function fromUsDate(us: string): string | null {
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/.exec(us.trim());
+  if (!m) return null;
+  const month = Number(m[1]);
+  const day = Number(m[2]);
+  const year = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  // Reject 02/30 and friends: the constructed date must round-trip.
+  const d = new Date(Date.UTC(year, month - 1, day));
+  if (d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) return null;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/** Lets the administrator type digits and slashes without fighting the field. */
+export function formatUsDateInput(raw: string): string {
+  const digits = raw.replace(/[^\d]/g, "").slice(0, 8);
+  if (digits.length <= 2) return digits;
+  if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+}
+
+/**
+ * Loads the customer table from Supabase for the admin data tabs.
+ * Re-reads whenever `version` changes so balances/cards stay in sync with saves.
+ */
+function useAdminCustomers(version: number) {
+  const [rows, setRows] = useState<AdminCustomer[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetchAdminCustomers()
+      .then((list) => {
+        if (cancelled) return;
+        setRows(list);
+        setError(null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(e instanceof DatabaseError ? e.message : "Could not load customers.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [version]);
+
+  return { rows, loading, error };
+}
+
 export default function AdminDashboard() {
-  const { content, setContent, resetContent, logoutAdmin, isAdmin } = useContent();
+  const { content, setContent, resetContent, logoutAdmin, isAdmin, loading, error, clearError } =
+    useContent();
   const [draft, setDraft] = useState<ContentState>(content);
   const [active, setActive] = useState<Tab>("hero");
   const [saved, setSaved] = useState(false);
@@ -57,21 +151,37 @@ export default function AdminDashboard() {
     setSaved(false);
   };
 
-  const onSave = () => {
-    console.log("[RIVERBEND] Admin onSave called. draft.contact.email =", draft.contact?.email, "draft.hero.headline =", draft.hero?.headline);
-    console.log("[RIVERBEND] localStorage BEFORE save:", localStorage.getItem("riverbend_content_v5")?.substring(0, 200));
-    setContent(draft);
-    setTimeout(() => {
-      console.log("[RIVERBEND] localStorage AFTER save:", localStorage.getItem("riverbend_content_v5")?.substring(0, 200));
-    }, 50);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const onSave = async () => {
+    setSaving(true);
+    setSaveError(null);
+    clearError();
+    try {
+      // Writes to Supabase; the provider only adopts it locally on success.
+      await setContent(draft);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setSaveError(
+        e instanceof DatabaseError ? e.message : "Could not save content to the database."
+      );
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const onReset = () => {
-    if (confirm("Reset all content to defaults? This cannot be undone.")) {
-      resetContent();
+  const onReset = async () => {
+    if (!confirm("Reset all website content to defaults? This cannot be undone.")) return;
+    setSaveError(null);
+    try {
+      await resetContent();
       setDraft(content);
+    } catch (e) {
+      setSaveError(
+        e instanceof DatabaseError ? e.message : "Could not reset content."
+      );
     }
   };
 
@@ -131,7 +241,7 @@ export default function AdminDashboard() {
               onClick={onSave}
               className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-river-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:bg-river-800"
             >
-              {saved ? "Saved ✓" : "Save changes"}
+              {saving ? "Saving…" : saved ? "Saved ✓" : "Save changes"}
             </button>
             <button
               onClick={onReset}
@@ -148,7 +258,19 @@ export default function AdminDashboard() {
         </aside>
 
         <main className="flex-1">
+          {(saveError || error) && (
+            <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs text-rose-800">
+              <p className="font-semibold">Database error</p>
+              <p className="mt-1">{saveError ?? error}</p>
+            </div>
+          )}
+          {loading && (
+            <div className="mb-4 rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-500">
+              Loading content from the database…
+            </div>
+          )}
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
+            {active === "brand" && <BrandEditor draft={draft} onChange={update} />}
             {active === "hero" && <HeroEditor draft={draft} onChange={update} />}
             {active === "contact" && <ContactEditor draft={draft} onChange={update} />}
             {active === "about" && <AboutEditor draft={draft} onChange={update} />}
@@ -160,10 +282,12 @@ export default function AdminDashboard() {
             {active === "account-profile" && <ProfileEditor draft={draft} onChange={update} />}
             {active === "account-send" && <SendEditor draft={draft} onChange={update} />}
             {active === "account-move" && <MoveEditor draft={draft} onChange={update} />}
+            {active === "account-login" && <AccountLoginEditor draft={draft} onChange={update} />}
             {active === "users" && <UsersEditor />}
             {active === "balances" && <BalancesEditor />}
             {active === "cardholders" && <CardholdersEditor />}
-            {active === "account-credentials" && <CredentialsEditor />}
+            {active === "transactions" && <TransactionsTab />}
+            {active === "messages" && <MessagesTab />}
             {active === "data" && <DataTab />}
           </div>
 
@@ -172,7 +296,7 @@ export default function AdminDashboard() {
               onClick={onSave}
               className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-river-700 px-4 py-2.5 text-sm font-semibold text-white"
             >
-              {saved ? "Saved ✓" : "Save changes"}
+              {saving ? "Saving…" : saved ? "Saved ✓" : "Save changes"}
             </button>
             <button
               onClick={onReset}
@@ -196,6 +320,8 @@ function Input({
   textarea,
   rows,
   hint,
+  type,
+  autoComplete,
 }: {
   label: string;
   value: string;
@@ -203,6 +329,8 @@ function Input({
   textarea?: boolean;
   rows?: number;
   hint?: string;
+  type?: "text" | "password" | "email";
+  autoComplete?: string;
 }) {
   return (
     <label className="block">
@@ -218,6 +346,8 @@ function Input({
         />
       ) : (
         <input
+          type={type ?? "text"}
+          autoComplete={autoComplete}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/20"
@@ -277,6 +407,58 @@ function ListEditor({
 }
 
 /* ---------------- Landing Editors ---------------- */
+
+function BrandEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (c: ContentState) => ContentState) => void }) {
+  const b = draft.brand;
+  return (
+    <div className="space-y-5">
+      <header>
+        <h2 className="text-xl font-semibold tracking-tight text-slate-900">Brand</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Company name and tagline. Shown in the site header, the footer, the copyright line, and the
+          sign-in panel.
+        </p>
+      </header>
+      <Input
+        label="Brand name"
+        value={b.name}
+        onChange={(v) => onChange((c) => ({ ...c, brand: { ...c.brand, name: v } }))}
+      />
+      <Input
+        label="Tagline"
+        value={b.tagline}
+        onChange={(v) => onChange((c) => ({ ...c, brand: { ...c.brand, tagline: v } }))}
+      />
+    </div>
+  );
+}
+
+function AccountLoginEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (c: ContentState) => ContentState) => void }) {
+  const l = draft.account.login;
+  const set = (patch: Partial<ContentState["account"]["login"]>) =>
+    onChange((c) => ({ ...c, account: { ...c.account, login: { ...c.account.login, ...patch } } }));
+  return (
+    <div className="space-y-5">
+      <header>
+        <h2 className="text-xl font-semibold tracking-tight text-slate-900">Account · Login copy</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Text shown while the customer sign-in form is submitting.
+        </p>
+      </header>
+      <Input
+        label="Submitting label (shown on the button while signing in)"
+        value={l.submittingLabel}
+        onChange={(v) => set({ submittingLabel: v })}
+      />
+      <Input
+        label="Success label"
+        value={l.successLabel}
+        onChange={(v) => set({ successLabel: v })}
+        hint="Reserved — not currently displayed by any page."
+      />
+    </div>
+  );
+}
 
 function HeroEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (c: ContentState) => ContentState) => void }) {
   const h = draft.hero;
@@ -513,6 +695,64 @@ function AccountsEditor({ draft, onChange }: { draft: ContentState; onChange: (f
         value={a.emptyMessage}
         onChange={(v) => set({ emptyMessage: v })}
       />
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Input
+          label="Demonstration badge"
+          value={a.demoBadge}
+          onChange={(v) => set({ demoBadge: v })}
+          hint="Shown on generated demonstration transactions."
+        />
+        <Input
+          label="Demonstration note"
+          value={a.demoNote}
+          onChange={(v) => set({ demoNote: v })}
+        />
+        <Input
+          label="Empty period message"
+          value={a.periodEmpty}
+          onChange={(v) => set({ periodEmpty: v })}
+        />
+        <Input
+          label="Future period message"
+          value={a.periodFuture}
+          onChange={(v) => set({ periodFuture: v })}
+        />
+        <Input
+          label="Month/year picker label"
+          value={a.periodSelectLabel}
+          onChange={(v) => set({ periodSelectLabel: v })}
+        />
+        <Input
+          label="Earliest-month button"
+          value={a.earliestLabel}
+          onChange={(v) => set({ earliestLabel: v })}
+        />
+        <Input
+          label="Previous month (accessible name)"
+          value={a.prevMonth}
+          onChange={(v) => set({ prevMonth: v })}
+        />
+        <Input
+          label="Next month (accessible name)"
+          value={a.nextMonth}
+          onChange={(v) => set({ nextMonth: v })}
+        />
+        <Input
+          label="Date range · from"
+          value={a.rangeStartLabel}
+          onChange={(v) => set({ rangeStartLabel: v })}
+        />
+        <Input
+          label="Date range · to"
+          value={a.rangeEndLabel}
+          onChange={(v) => set({ rangeEndLabel: v })}
+        />
+        <Input
+          label="Clear dates button"
+          value={a.rangeClear}
+          onChange={(v) => set({ rangeClear: v })}
+        />
+      </div>
     </div>
   );
 }
@@ -565,7 +805,6 @@ function ProfileEditor({ draft, onChange }: { draft: ContentState; onChange: (fn
       <div className="grid gap-4 sm:grid-cols-3">
         <Input label="2FA label" value={p.twoFactorLabel} onChange={(v) => set({ twoFactorLabel: v })} />
         <Input label="2FA enabled" value={p.twoFactorEnabled} onChange={(v) => set({ twoFactorEnabled: v })} />
-        <Input label="Last sign-in label" value={p.lastSignInLabel} onChange={(v) => set({ lastSignInLabel: v })} />
       </div>
       <Input label="Change password label" value={p.changePasswordLabel} onChange={(v) => set({ changePasswordLabel: v })} />
       <Input label="Preferences group" value={p.preferencesGroup} onChange={(v) => set({ preferencesGroup: v })} />
@@ -580,164 +819,7 @@ function ProfileEditor({ draft, onChange }: { draft: ContentState; onChange: (fn
   );
 }
 
-/* ---------------- Credentials ---------------- */
-
-function CredentialsEditor() {
-  const { setAccountCredentials, version: authVersion } = useAuth();
-  const accounts: any[] = readAccounts();
-  void authVersion;
-
-  const [drafts, setDrafts] = useState<Record<string, { username: string; password: string; memberId: string; email: string }>>(() => {
-    const init: Record<string, { username: string; password: string; memberId: string; email: string }> = {};
-    accounts.forEach((a) => {
-      init[a.id] = {
-        username: a.username ?? "",
-        password: a.password ?? "",
-        memberId: a.memberId ?? "",
-        email: a.email ?? "",
-      };
-    });
-    return init;
-  });
-
-  // Re-sync drafts whenever accounts change
-  useEffect(() => {
-    const init: Record<string, { username: string; password: string; memberId: string; email: string }> = {};
-    accounts.forEach((a) => {
-      init[a.id] = {
-        username: a.username ?? "",
-        password: a.password ?? "",
-        memberId: a.memberId ?? "",
-        email: a.email ?? "",
-      };
-    });
-    setDrafts(init);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authVersion]);
-
-  const setField = (userId: string, key: keyof (typeof drafts)[string], value: string) => {
-    setDrafts((d) => ({ ...d, [userId]: { ...d[userId], [key]: value } }));
-  };
-
-  const saveOne = (userId: string) => {
-    const d = drafts[userId];
-    if (!d) return;
-    if (!d.username.trim() || !d.password.trim()) {
-      alert("Username and password are required.");
-      return;
-    }
-    setAccountCredentials(userId, {
-      username: d.username.trim(),
-      password: d.password,
-      memberId: d.memberId.trim() || `MBR-${userId.toUpperCase()}-001`,
-      email: d.email.trim(),
-    });
-    alert(
-      `Saved for ${accounts.find((a) => a.id === userId)?.fullName}. New login: "${d.username.trim()}" with the password you set.`
-    );
-  };
-
-  return (
-    <div className="space-y-5">
-      <header>
-        <h2 className="text-xl font-semibold tracking-tight text-slate-900">Account · Login credentials</h2>
-        <p className="mt-1 text-sm text-slate-500">
-          Edit username, password, member ID, and email. Changes apply immediately — log in with the new credentials to test.
-        </p>
-      </header>
-
-      <div className="space-y-4">
-        {accounts.map((a: any) => {
-          const d = drafts[a.id] ?? {
-            username: "",
-            password: "",
-            memberId: "",
-            email: "",
-          };
-          return (
-            <div key={a.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-semibold text-slate-900">{a.fullName}</p>
-                  <p className="text-[11px] text-slate-500">
-                    <code className="font-mono">{a.id}</code> · current login: <code className="font-mono">{a.username}</code>
-                  </p>
-                </div>
-              </div>
-
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <CredentialField
-                  label="Username (used to log in)"
-                  value={d.username}
-                  onChange={(v) => setField(a.id, "username", v)}
-                  placeholder="e.g. alex"
-                />
-                <CredentialField
-                  label="Password (set a new one)"
-                  value={d.password}
-                  onChange={(v) => setField(a.id, "password", v)}
-                  placeholder="Enter new password"
-                  type="password"
-                />
-                <CredentialField
-                  label="Member ID"
-                  value={d.memberId}
-                  onChange={(v) => setField(a.id, "memberId", v)}
-                  placeholder="e.g. MBR-DEMO-1-001"
-                />
-                <CredentialField
-                  label="Email address"
-                  value={d.email}
-                  onChange={(v) => setField(a.id, "email", v)}
-                  placeholder="e.g. alex@riverbend.bank"
-                  type="email"
-                />
-              </div>
-
-              <div className="mt-4 flex justify-end">
-                <button
-                  onClick={() => saveOne(a.id)}
-                  className="inline-flex items-center justify-center rounded-xl bg-river-700 px-4 py-2 text-xs font-semibold text-white hover:bg-river-800"
-                >
-                  Save credentials
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function CredentialField({
-  label,
-  value,
-  onChange,
-  placeholder,
-  type,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-  type?: "text" | "password" | "email";
-}) {
-  return (
-    <label className="block">
-      <span className="block text-xs font-semibold uppercase tracking-wider text-slate-500">
-        {label}
-      </span>
-      <input
-        type={type ?? "text"}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder-slate-400 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/20"
-      />
-    </label>
-  );
-}
+/* ---------------- Send / Move ---------------- */
 
 function SendEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (c: ContentState) => ContentState) => void }) {
   const s = draft.account.send;
@@ -755,10 +837,13 @@ function SendEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (
         <Input label="From label" value={s.fromLabel} onChange={(v) => set({ fromLabel: v })} />
         <Input label="To label" value={s.toLabel} onChange={(v) => set({ toLabel: v })} />
       </div>
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2">
         <Input label="Recipient name label" value={s.recipientNameLabel} onChange={(v) => set({ recipientNameLabel: v })} />
-        <Input label="Recipient account label" value={s.recipientAccountLabel} onChange={(v) => set({ recipientAccountLabel: v })} />
         <Input label="Recipient bank label" value={s.recipientBankLabel} onChange={(v) => set({ recipientBankLabel: v })} />
+        <Input label="Recipient account label" value={s.recipientAccountLabel} onChange={(v) => set({ recipientAccountLabel: v })} />
+        <Input label="Routing Number label" value={s.routingNumberLabel} onChange={(v) => set({ routingNumberLabel: v })} />
+        <Input label="SWIFT Code / BIC label" value={s.swiftCodeLabel} onChange={(v) => set({ swiftCodeLabel: v })} />
+        <Input label="Recipient Address label" value={s.recipientAddressLabel} onChange={(v) => set({ recipientAddressLabel: v })} />
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <Input label="Amount label" value={s.amountLabel} onChange={(v) => set({ amountLabel: v })} />
@@ -772,6 +857,24 @@ function SendEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (
             label="Fixed savings warning"
             value={s.fixedSavingsWarning}
             onChange={(v) => set({ fixedSavingsWarning: v })}
+            textarea
+            rows={3}
+          />
+        </div>
+      </div>
+      <div className="rounded-xl border border-rose-200 bg-rose-50/60 p-4">
+        <p className="text-xs font-semibold uppercase tracking-wider text-rose-800">
+          Inactive Checking notice
+        </p>
+        <p className="mt-1 text-[11px] text-rose-700">
+          Shown on the Send page when an admin has switched the customer&rsquo;s Checking account
+          to inactive. Edit the wording here — no code change needed.
+        </p>
+        <div className="mt-3">
+          <Input
+            label="Message shown to the customer"
+            value={s.inactiveCheckingWarning}
+            onChange={(v) => set({ inactiveCheckingWarning: v })}
             textarea
             rows={3}
           />
@@ -818,6 +921,21 @@ function MoveEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (
           />
         </div>
       </div>
+      <div className="rounded-xl border border-sky-200 bg-sky-50/60 p-4">
+        <p className="text-xs font-semibold uppercase tracking-wider text-sky-800">
+          Early withdrawal fee preview
+        </p>
+        <p className="mt-1 text-[11px] text-sky-700">
+          The fee itself is 5% of the amount and is calculated by the database. These are only the
+          labels for the two read-only fields and the buttons either side of the preview.
+        </p>
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
+          <Input label="Breaking fee label" value={m.breakingFeeLabel} onChange={(v) => set({ breakingFeeLabel: v })} />
+          <Input label="Withdraw amount label" value={m.withdrawAmountLabel} onChange={(v) => set({ withdrawAmountLabel: v })} />
+          <Input label="Button before preview" value={m.continueLabel} onChange={(v) => set({ continueLabel: v })} />
+          <Input label="Button after preview" value={m.confirmLabel} onChange={(v) => set({ confirmLabel: v })} />
+        </div>
+      </div>
       <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
         <p className="text-xs font-semibold uppercase tracking-wider text-emerald-800">Success popup</p>
         <div className="mt-3 space-y-3">
@@ -831,97 +949,1112 @@ function MoveEditor({ draft, onChange }: { draft: ContentState; onChange: (fn: (
 
 /* ---------------- Users ---------------- */
 
+/**
+ * Pending six-digit logins, for the admin to read out to customers.
+ *
+ * This is the only admin surface that displays a live code. It polls while the
+ * tab is open so a code appears without a manual refresh, and it shows the
+ * countdown and remaining attempts so the admin can tell a customer whether
+ * their code is still good.
+ */
+function VerificationPanel({ version }: { version: number }) {
+  const { rows } = useAdminCustomers(version);
+  const [rowsByRef, setRowsByRef] = useState<Record<string, AdminVerification>>({});
+  const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+
+  const load = useCallback(async () => {
+    if (!ADMIN_PASSWORD) return;
+    try {
+      const list = await fetchAdminVerifications(ADMIN_PASSWORD);
+      const map: Record<string, AdminVerification> = {};
+      list.forEach((v) => {
+        map[v.clientRef] = v;
+      });
+      setRowsByRef(map);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not load verification codes.");
+    }
+  }, []);
+
+  // Refresh on mount, whenever the customer list changes, and every 10s so the
+  // countdown and any newly started login appear without a manual reload.
+  useEffect(() => {
+    void load();
+    const id = window.setInterval(() => {
+      void load();
+      setTick((t) => t + 1);
+    }, 10000);
+    return () => window.clearInterval(id);
+  }, [load, version]);
+
+  void tick;
+
+  const entries = rows
+    .map((u) => ({ customer: u, verification: rowsByRef[u.id] }))
+    .filter((e) => e.verification);
+
+  const pendingCount = entries.filter((e) => e.verification!.status === "pending").length;
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-900">Login verification</h3>
+          <p className="mt-0.5 text-[11px] text-slate-500">
+            Six-digit codes waiting to be read out to customers. Each expires 5 minutes after it
+            was generated.
+          </p>
+        </div>
+        <span
+          className={
+            "inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold " +
+            (pendingCount > 0
+              ? "bg-amber-100 text-amber-900"
+              : "bg-slate-100 text-slate-600")
+          }
+        >
+          {pendingCount > 0 ? `${pendingCount} pending` : "None pending"}
+        </span>
+      </div>
+
+      {error && (
+        <p className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+          {error}
+        </p>
+      )}
+
+      {entries.length === 0 ? (
+        <p className="mt-3 rounded-xl bg-slate-50 p-3 text-xs text-slate-500">
+          No customer has requested a code yet. Codes appear here as soon as someone signs in.
+        </p>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {entries.map(({ customer, verification }) => (
+            <VerificationRowCard
+              key={customer.id}
+              name={customer.fullName}
+              verification={verification!}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VerificationRowCard({
+  name,
+  verification,
+}: {
+  name: string;
+  verification: AdminVerification;
+}) {
+  const { status, code, secondsLeft, attemptsLeft } = verification;
+
+  const tone =
+    status === "pending"
+      ? "border-amber-200 bg-amber-50"
+      : status === "verified"
+        ? "border-emerald-200 bg-emerald-50"
+        : status === "expired"
+          ? "border-slate-200 bg-slate-50"
+          : "border-rose-200 bg-rose-50";
+
+  const label =
+    status === "pending"
+      ? "Pending"
+      : status === "verified"
+        ? "Completed"
+        : status === "expired"
+          ? "Expired"
+          : "Failed — too many wrong codes";
+
+  const mm = Math.floor(secondsLeft / 60);
+  const ss = String(secondsLeft % 60).padStart(2, "0");
+
+  return (
+    <div className={"rounded-xl border p-3 " + tone}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-semibold text-slate-900">{name}</p>
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+          {label}
+        </span>
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center gap-3">
+        <code
+          className={
+            "select-all rounded-lg px-3 py-1.5 font-mono text-lg font-semibold tracking-[0.3em] " +
+            (status === "pending"
+              ? "bg-white text-slate-900 ring-1 ring-amber-300"
+              : "bg-white/60 text-slate-400 line-through")
+          }
+        >
+          {code}
+        </code>
+        <span className="text-[11px] text-slate-600">
+          {status === "pending" ? (
+            <>
+              Expires in{" "}
+              <span className="font-semibold tabular-nums text-slate-800">
+                {mm}:{ss}
+              </span>
+            </>
+          ) : status === "verified" ? (
+            "Code used — the customer is signed in."
+          ) : status === "expired" ? (
+            "No longer valid. Customer can request a new code."
+          ) : (
+            "Challenge closed for security. Customer must sign in again."
+          )}
+        </span>
+      </div>
+
+      <p className="mt-1.5 text-[11px] text-slate-500">
+        {attemptsLeft} of 5 attempts remaining. Read the code to the customer — never send it by
+        email or text message.
+      </p>
+    </div>
+  );
+}
+
 function UsersEditor() {
+  const { version, user, refreshUser } = useAuth();
+  // Bumped after every successful save so this table re-reads its own write.
+  // Relying on the session `version` alone was wrong: it only changes when the
+  // edited customer is also the signed-in one, so editing anyone else left the
+  // card header showing the previous name until something else forced a reload.
+  const [reloadKey, setReloadKey] = useState(0);
+  const { rows, loading, error: loadError } = useAdminCustomers(version + reloadKey);
+
+  type Draft = {
+    fullName: string;
+    initials: string;
+    email: string;
+    memberId: string;
+    username: string;
+    password: string;
+  };
+
+  const EMPTY_DRAFT: Draft = {
+    fullName: "",
+    initials: "",
+    email: "",
+    memberId: "",
+    username: "",
+    password: "",
+  };
+
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+  // Fields the admin has typed into but not saved. These survive background
+  // refreshes so a reload can never silently discard an unsaved edit.
+  const dirty = useRef<Record<string, Set<keyof Draft>>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Checking account status, per customer. Read through the same passphrase gate
+  // the rest of the admin surface uses, and only ever written by the database
+  // function — migration 006 makes the column unwritable from the browser.
+  const [statuses, setStatuses] = useState<Record<string, AccountStatuses>>({});
+  const [statusBusy, setStatusBusy] = useState<string | null>(null);
+
+  const loadStatuses = useCallback(async () => {
+    try {
+      setStatuses(await fetchAccountStatuses(ADMIN_PASSWORD));
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not load account statuses.");
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadStatuses();
+  }, [loadStatuses, reloadKey]);
+
+  const toggleCheckingStatus = async (id: string) => {
+    const current = statuses[id]?.checking ?? "active";
+    const next = current === "active" ? "inactive" : "active";
+    setError(null);
+    setNotice(null);
+    setStatusBusy(id);
+    try {
+      await setAccountStatus(ADMIN_PASSWORD, id, "checking", next);
+      // Re-read rather than assuming, so the badge always shows what is stored.
+      await loadStatuses();
+      const who = rows.find((u2) => u2.id === id)?.fullName ?? id;
+      setNotice(
+        next === "inactive"
+          ? `${who}'s Checking account is now INACTIVE. External transfers from it are blocked.`
+          : `${who}'s Checking account is now ACTIVE. External transfers are available again.`
+      );
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not change the account status.");
+    } finally {
+      setStatusBusy(null);
+    }
+  };
+
+  // Re-seed the inputs whenever the database rows change so the panels always
+  // reflect what is stored, but keep any field the admin is still editing.
+  useEffect(() => {
+    setDrafts((prev) => {
+      const next: Record<string, Draft> = {};
+      rows.forEach((u) => {
+        const stored: Draft = {
+          fullName: u.fullName ?? "",
+          initials: u.initials ?? "",
+          email: u.email ?? "",
+          memberId: u.memberId ?? "",
+          username: u.username ?? "",
+          password: u.password ?? "",
+        };
+        const pending = dirty.current[u.id];
+        const keep = prev[u.id];
+        if (!pending || pending.size === 0 || !keep) {
+          next[u.id] = stored;
+          return;
+        }
+        next[u.id] = {
+          fullName: pending.has("fullName") ? keep.fullName : stored.fullName,
+          initials: pending.has("initials") ? keep.initials : stored.initials,
+          email: pending.has("email") ? keep.email : stored.email,
+          memberId: pending.has("memberId") ? keep.memberId : stored.memberId,
+          username: pending.has("username") ? keep.username : stored.username,
+          password: pending.has("password") ? keep.password : stored.password,
+        };
+      });
+      return next;
+    });
+  }, [rows]);
+
+  const setField = (id: string, key: keyof Draft, value: string) => {
+    (dirty.current[id] ??= new Set<keyof Draft>()).add(key);
+    setDrafts((d) => ({ ...d, [id]: { ...d[id], [key]: value } }));
+  };
+
+  const saveOne = async (id: string) => {
+    const d = drafts[id];
+    if (!d) return;
+    setError(null);
+    setNotice(null);
+
+    const fullName = d.fullName.trim().replace(/\s+/g, " ");
+    const initials = d.initials.trim().toUpperCase();
+    const email = d.email.trim();
+    const memberId = d.memberId.trim();
+    const username = d.username.trim();
+
+    // Check here so the admin gets a clear message rather than a raw constraint
+    // error from Postgres.
+    if (!fullName) {
+      setError("Full name is required.");
+      return;
+    }
+    // Matches the database rule: 1-4 characters. Allows "AM" and also a single
+    // glyph or three letters, which some customers prefer.
+    if (initials.length < 1 || initials.length > 4) {
+      setError("Initials must be 1 to 4 characters.");
+      return;
+    }
+    if (!email || !email.includes("@")) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    if (!memberId) {
+      setError("Member ID is required.");
+      return;
+    }
+    if (!username) {
+      setError("Username is required.");
+      return;
+    }
+    if (!d.password.trim()) {
+      setError("Password is required.");
+      return;
+    }
+
+    setBusy(id);
+    try {
+      await adminSetCredentials(id, {
+        fullName,
+        initials,
+        email,
+        memberId,
+        username,
+        password: d.password,
+      });
+      // Saved values now match the database, so stop treating them as pending.
+      dirty.current[id] = new Set<keyof Draft>();
+      // Re-read the customer table so the header, avatar and inputs show the
+      // stored values, then refresh the session if this is the signed-in user.
+      setReloadKey((k) => k + 1);
+      if (user && user.id === id) await refreshUser();
+      setNotice(`Saved ${rows.find((u) => u.id === id)?.fullName ?? id}.`);
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not save customer details.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <header>
         <h2 className="text-xl font-semibold tracking-tight text-slate-900">Users</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Sample accounts available for the demo login. (Read-only in this version — wired from
-          <code className="ml-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px]">src/account/auth.tsx</code>)
+          Manage customer accounts. Changes save to Supabase and appear on every device.
         </p>
       </header>
-      <div className="overflow-hidden rounded-xl border border-slate-200">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
-            <tr>
-              <th className="px-4 py-2">Name</th>
-              <th className="px-4 py-2">Username</th>
-              <th className="px-4 py-2">Email</th>
-              <th className="px-4 py-2 text-right">Checking</th>
-              <th className="px-4 py-2 text-right">Fixed savings</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {getSampleAccounts().map((u: any) => (
-              <tr key={u.id}>
-                <td className="px-4 py-3 font-medium text-slate-900">{u.fullName}</td>
-                <td className="px-4 py-3 font-mono text-xs text-slate-700">{u.username}</td>
-                <td className="px-4 py-3 text-slate-700">{u.email}</td>
-                <td className="px-4 py-3 text-right font-semibold text-slate-900">
-                  {formatMoney(u.balance.checking)}
-                </td>
-                <td className="px-4 py-3 text-right font-semibold text-slate-900">
-                  {formatMoney(u.balance.savings)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+
+      {loading && <p className="text-xs text-slate-500">Loading customers…</p>}
+      {(error || loadError) && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+          {error ?? loadError}
+        </div>
+      )}
+      {notice && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
+          {notice}
+        </div>
+      )}
+
+      <VerificationPanel version={version} />
+
+      <div className="space-y-5">
+        {rows.map((u) => {
+          const d = drafts[u.id] ?? EMPTY_DRAFT;
+          return (
+            <div key={u.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-river-50 text-sm font-semibold text-river-800">
+                    {d.initials || u.initials}
+                  </span>
+                  <p className="min-w-0 truncate text-sm font-semibold text-slate-900">
+                    {d.fullName || u.fullName}
+                  </p>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  {formatMoney(u.balance.checking + u.balance.savings)} total
+                </p>
+              </div>
+              <p className="mt-1 text-[11px] text-slate-400">Customer ID {u.id}</p>
+
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <Input
+                  label="Full name"
+                  value={d.fullName}
+                  onChange={(v) => setField(u.id, "fullName", v)}
+                  hint="Shown on the dashboard, profile, cards and admin tables."
+                />
+                <Input
+                  label="Initials"
+                  value={d.initials}
+                  onChange={(v) => setField(u.id, "initials", v)}
+                  hint="1 to 4 characters. Shown in the avatar circle."
+                />
+                <Input
+                  label="Email address"
+                  type="email"
+                  autoComplete="off"
+                  value={d.email}
+                  onChange={(v) => setField(u.id, "email", v)}
+                  hint="Shown on the customer's profile."
+                />
+                <Input
+                  label="Member ID"
+                  value={d.memberId}
+                  onChange={(v) => setField(u.id, "memberId", v)}
+                  hint="Shown on the customer's profile."
+                />
+                <Input
+                  label="Username"
+                  value={d.username}
+                  onChange={(v) => setField(u.id, "username", v)}
+                  hint="Used to sign in."
+                />
+                <Input
+                  label="Password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={d.password}
+                  onChange={(v) => setField(u.id, "password", v)}
+                  hint="Used to sign in. Type a new value to reset it."
+                />
+              </div>
+
+              {/* Checking account status — controls external transfers only. */}
+              <div className="mt-4 flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                    Checking account status
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Inactive blocks external transfers from Checking. Moving between the
+                    customer's own accounts still works.
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-3">
+                  <span
+                    className={
+                      "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold uppercase tracking-wider " +
+                      ((statuses[u.id]?.checking ?? "active") === "active"
+                        ? "bg-emerald-100 text-emerald-800"
+                        : "bg-amber-100 text-amber-900")
+                    }
+                    data-testid={`status-${u.id}`}
+                  >
+                    <span
+                      className={
+                        "h-1.5 w-1.5 rounded-full " +
+                        ((statuses[u.id]?.checking ?? "active") === "active"
+                          ? "bg-emerald-600"
+                          : "bg-amber-600")
+                      }
+                    />
+                    {statuses[u.id]?.checking ?? "active"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => toggleCheckingStatus(u.id)}
+                    disabled={statusBusy === u.id}
+                    className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-60"
+                  >
+                    {statusBusy === u.id
+                      ? "Saving…"
+                      : (statuses[u.id]?.checking ?? "active") === "active"
+                        ? "Set inactive"
+                        : "Set active"}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                onClick={() => saveOne(u.id)}
+                disabled={busy === u.id}
+                className="mt-4 inline-flex w-full items-center justify-center rounded-xl bg-river-700 px-5 py-3 text-sm font-semibold text-white hover:bg-river-800 disabled:opacity-60 sm:w-auto"
+              >
+                {busy === u.id ? "Saving…" : `Save ${(d.fullName || u.fullName).split(" ")[0]}`}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
+        <p className="font-semibold">Demo credentials</p>
+        <p className="mt-1">
+          Passwords are stored as plaintext in <code className="font-mono">customers.demo_password</code>{" "}
+          for this demo. Replace with Supabase Auth before loading real customer data.
+        </p>
       </div>
     </div>
   );
 }
 
+/* ---------------- Contact messages ---------------- */
+
+/**
+ * Submissions from the homepage and footer contact forms.
+ *
+ * Messages arrive here because the visitor form writes to
+ * public.contact_messages, which the admin reads through a passphrase-gated
+ * function (see migration 005). Unread messages are visually distinct and are
+ * counted in the header, so a new enquiry cannot be missed.
+ */
+/* ---------------- Transactions ---------------- */
+
+/**
+ * The customer filter. "all" is the default so the admin sees the whole ledger
+ * first; the two demo customers are offered by name *and* client_ref, because
+ * client_ref is the stable identifier and the name is editable.
+ */
+type CustomerFilter = "all" | "demo-1" | "demo-2";
+
+const CUSTOMER_FILTERS: { id: CustomerFilter; label: string }[] = [
+  { id: "all", label: "All customers" },
+  { id: "demo-1", label: "Christopher Williams (demo-1)" },
+  { id: "demo-2", label: "Jordan Reyes (demo-2)" },
+];
+
+function TransactionsTab() {
+  const [rows, setRows] = useState<AdminTransaction[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [filter, setFilter] = useState<CustomerFilter>("all");
+  // The row being edited, and the values in its form. Held as strings so the
+  // date and amount fields behave like inputs rather than reformatting under
+  // the administrator's fingers.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draftDate, setDraftDate] = useState("");
+  const [draftAmount, setDraftAmount] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const list = await fetchAdminTransactions();
+      setRows(list);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not load transactions.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  /**
+   * Open the editor for a row.
+   *
+   * The amount field is prefilled with its magnitude and the label says whether
+   * this is money in or money out. The stored sign is kept on save, so editing
+   * the number can never quietly turn a payment into a refund.
+   */
+  const beginEdit = (t: AdminTransaction) => {
+    setEditing(t.id);
+    setConfirming(null);
+    setError(null);
+    setNotice(null);
+    setDraftDate(toUsDate(t.occurredOn));
+    setDraftAmount(Math.abs(t.amount).toFixed(2));
+  };
+
+  const cancelEdit = () => {
+    setEditing(null);
+    setDraftDate("");
+    setDraftAmount("");
+  };
+
+  const saveEdit = async (t: AdminTransaction) => {
+    const magnitude = Number.parseFloat(draftAmount);
+    if (!Number.isFinite(magnitude) || magnitude <= 0) {
+      setError("Enter an amount greater than zero.");
+      return;
+    }
+    const isoDate = fromUsDate(draftDate);
+    if (!isoDate) {
+      setError("Enter the date as MM/DD/YY.");
+      return;
+    }
+    // Preserve the direction the transaction already had: this corrects an
+    // existing row, it does not reverse it.
+    const signed = t.amount < 0 ? -magnitude : magnitude;
+
+    setBusy(t.id);
+    setError(null);
+    setNotice(null);
+    try {
+      await editAdminTransaction(ADMIN_PASSWORD, t.id, t.amount, signed, isoDate);
+      cancelEdit();
+      await load();
+      setNotice(
+        `Updated “${t.merchant}” to ${formatMoney(signed)} on ${draftDate}. ` +
+          `The account balance moved by ${formatMoney(signed - t.amount)}.`
+      );
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not save the transaction.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const remove = async (t: AdminTransaction) => {
+    setBusy(t.id);
+    setError(null);
+    setNotice(null);
+    try {
+      await deleteAdminTransaction(ADMIN_PASSWORD, t.id);
+      setConfirming(null);
+      // Re-read rather than splice locally: the deletion has to be shown as the
+      // database now holds it, not as the browser would like it to be.
+      await load();
+      setNotice(`Deleted “${t.merchant}” (${formatMoney(t.amount)}). Balances are unchanged.`);
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not delete the transaction.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const visible = filter === "all" ? rows : rows.filter((r) => r.clientRef === filter);
+
+  return (
+    <div className="space-y-5">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight text-slate-900">Transactions</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Every customer&rsquo;s transaction history. Deleting a transaction removes it from that
+            customer&rsquo;s history; it never changes a stored balance.
+          </p>
+        </div>
+        <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+          {loading ? "Loading…" : `${visible.length} shown`}
+        </span>
+      </header>
+
+      {error && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+          {error}
+        </div>
+      )}
+      {notice && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
+          {notice}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label
+          htmlFor="txn-customer"
+          className="text-[11px] font-semibold uppercase tracking-wide text-slate-500"
+        >
+          Customer
+        </label>
+        <select
+          id="txn-customer"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value as CustomerFilter)}
+          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700"
+        >
+          {CUSTOMER_FILTERS.map((f) => (
+            <option key={f.id} value={f.id}>
+              {f.label}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={() => void load()}
+          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+        >
+          Refresh
+        </button>
+      </div>
+
+      {!loading && visible.length === 0 && (
+        <p className="rounded-xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-500">
+          No transactions for this customer.
+        </p>
+      )}
+
+      <div className="space-y-2">
+        {visible.map((t) => (
+          <article
+            key={t.id}
+            className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="break-words text-sm font-medium text-slate-900">{t.merchant}</p>
+                <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-slate-500">
+                  <span className="font-semibold text-slate-600">{t.customerName}</span>
+                  <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                    {t.clientRef || "unknown"}
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span>{t.category}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{formatTransactionDate(t.occurredOn)}</span>
+                  <span aria-hidden="true">·</span>
+                  <span className="capitalize">
+                    {t.accountKind === "savings" ? "Fixed savings" : "Checking"}
+                  </span>
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <p
+                  className={`shrink-0 text-sm font-semibold tabular-nums ${
+                    t.amount >= 0 ? "text-emerald-600" : "text-slate-900"
+                  }`}
+                >
+                  {t.amount >= 0 ? "+" : ""}
+                  {formatMoney(t.amount)}
+                </p>
+
+                {confirming === t.id ? (
+                  <>
+                    <button
+                      onClick={() => void remove(t)}
+                      disabled={busy === t.id}
+                      className="rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-60"
+                    >
+                      {busy === t.id ? "Deleting…" : "Confirm delete"}
+                    </button>
+                    <button
+                      onClick={() => setConfirming(null)}
+                      className="rounded-xl px-2 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-700"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => beginEdit(t)}
+                      data-testid={`edit-${t.id}`}
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => setConfirming(t.id)}
+                      className="rounded-xl border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                    >
+                      Delete
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* ---- inline editor ------------------------------------------
+                Only the two editable fields appear. Description, type and
+                account are shown as text, because this corrects a row rather
+                than replacing it. */}
+            {editing === t.id && (
+              <div
+                className="mt-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3"
+                data-testid={`editor-${t.id}`}
+              >
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-slate-500">
+                      Transaction date
+                    </span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="MM/DD/YY"
+                      aria-label="Transaction date"
+                      value={draftDate}
+                      onChange={(e) => setDraftDate(formatUsDateInput(e.target.value))}
+                      data-testid="edit-date"
+                      className="w-full rounded-xl border border-slate-200 bg-white px-2 py-2 text-sm text-slate-900 tabular-nums"
+                    />
+                    <span className="mt-1 block text-[10px] text-slate-400">
+                      {draftDate.length === 8 ? "MM/DD/YY" : "Use MM/DD/YY, e.g. 11/16/26"}
+                    </span>
+                  </label>
+
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-slate-500">
+                      Amount ({t.amount < 0 ? "money sent" : "money received"})
+                    </span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      inputMode="decimal"
+                      aria-label="Amount"
+                      value={draftAmount}
+                      onChange={(e) => setDraftAmount(e.target.value)}
+                      data-testid="edit-amount"
+                      className="w-full rounded-xl border border-slate-200 bg-white px-2 py-2 text-sm text-slate-900"
+                    />
+                    <span className="mt-1 block text-[10px] text-slate-400">
+                      {(() => {
+                        const m = Number.parseFloat(draftAmount);
+                        if (!Number.isFinite(m) || m <= 0) return "Enter an amount above zero.";
+                        const signed = t.amount < 0 ? -m : m;
+                        const delta = signed - t.amount;
+                        if (Math.abs(delta) < 0.005) return "No change to the balance.";
+                        return `Balance ${delta > 0 ? "up" : "down"} ${formatMoney(Math.abs(delta))}`;
+                      })()}
+                    </span>
+                  </label>
+                </div>
+
+                <p className="mt-2 text-[11px] text-slate-500">
+                  Description and type are kept: <span className="font-medium">{t.merchant}</span> ·{" "}
+                  {t.category}
+                </p>
+
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    onClick={() => void saveEdit(t)}
+                    disabled={busy === t.id}
+                    data-testid="save-edit"
+                    className="rounded-xl bg-river-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-river-800 disabled:opacity-60"
+                  >
+                    {busy === t.id ? "Saving…" : "Save changes"}
+                  </button>
+                  <button
+                    onClick={cancelEdit}
+                    className="rounded-xl px-2 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-700"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Transaction dates are day-only in the database, so no clock is shown. */
+function formatTransactionDate(iso: string) {
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function MessagesTab() {
+  const [messages, setMessages] = useState<ContactMessage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const list = await fetchContactMessages(ADMIN_PASSWORD);
+      setMessages(list);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not load messages.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const toggleRead = async (m: ContactMessage) => {
+    setBusy(m.id);
+    setError(null);
+    try {
+      await setContactMessageRead(ADMIN_PASSWORD, m.id, !m.isRead);
+      await load();
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not update the message.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const remove = async (m: ContactMessage) => {
+    setBusy(m.id);
+    setError(null);
+    try {
+      await deleteContactMessage(ADMIN_PASSWORD, m.id);
+      setConfirming(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not delete the message.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const unreadCount = messages.filter((m) => !m.isRead).length;
+
+  return (
+    <div className="space-y-5">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight text-slate-900">Messages</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Enquiries sent through the website contact forms. New messages are highlighted.
+          </p>
+        </div>
+        <span
+          className={
+            "inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold " +
+            (unreadCount > 0 ? "bg-amber-100 text-amber-900" : "bg-slate-100 text-slate-600")
+          }
+        >
+          {unreadCount > 0 ? `${unreadCount} unread` : "All read"}
+        </span>
+      </header>
+
+      {error && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+          {error}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => void load()}
+          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+        >
+          Refresh
+        </button>
+        <span className="text-[11px] text-slate-400">
+          {loading ? "Loading…" : `${messages.length} total`}
+        </span>
+      </div>
+
+      {!loading && messages.length === 0 && (
+        <p className="rounded-xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-500">
+          No messages yet. Anything sent through the contact form will appear here.
+        </p>
+      )}
+
+      <div className="space-y-3">
+        {messages.map((m) => (
+          <article
+            key={m.id}
+            className={
+              "rounded-2xl border p-4 shadow-sm " +
+              (m.isRead ? "border-slate-200 bg-white" : "border-amber-300 bg-amber-50/60")
+            }
+          >
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  {!m.isRead && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900">
+                      <span className="h-1.5 w-1.5 rounded-full bg-amber-700" />
+                      New
+                    </span>
+                  )}
+                  <p className="truncate text-sm font-semibold text-slate-900">{m.fullName}</p>
+                </div>
+                <a
+                  href={`mailto:${m.email}`}
+                  className="mt-0.5 inline-block break-all text-xs text-river-700 hover:text-river-800"
+                >
+                  {m.email}
+                </a>
+              </div>
+              <p className="shrink-0 text-[11px] text-slate-500">{formatMessageDate(m.createdAt)}</p>
+            </div>
+
+            <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-700">
+              {m.message}
+            </p>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-200/70 pt-3">
+              <button
+                onClick={() => void toggleRead(m)}
+                disabled={busy === m.id}
+                className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                {busy === m.id ? "Saving…" : m.isRead ? "Mark as unread" : "Mark as read"}
+              </button>
+
+              {confirming === m.id ? (
+                <>
+                  <button
+                    onClick={() => void remove(m)}
+                    disabled={busy === m.id}
+                    className="rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-60"
+                  >
+                    {busy === m.id ? "Deleting…" : "Confirm delete"}
+                  </button>
+                  <button
+                    onClick={() => setConfirming(null)}
+                    className="rounded-xl px-2 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-700"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setConfirming(m.id)}
+                  className="rounded-xl border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                >
+                  Delete
+                </button>
+              )}
+
+              <a
+                href={`mailto:${m.email}?subject=${encodeURIComponent("Re: your message to Riverbend")}`}
+                className="ml-auto text-xs font-semibold text-river-700 hover:text-river-800"
+              >
+                Reply by email
+              </a>
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Message timestamps: full date and time, since the admin needs both. */
+function formatMessageDate(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 /* ---------------- Balances ---------------- */
 
 function BalancesEditor() {
-  const { setUserBalance, version } = useAuth();
-  // Read from the persisted store on every render so this view stays in sync
-  const accounts = getSampleAccounts();
-  // Re-initialize drafts when the store version changes
-  const [drafts, setDrafts] = useState<Record<string, { checking: string; savings: string }>>(() => {
-    const init: Record<string, { checking: string; savings: string }> = {};
-    accounts.forEach((u) => {
-      init[u.id] = {
-        checking: u.balance.checking.toFixed(2),
-        savings: u.balance.savings.toFixed(2),
-      };
-    });
-    return init;
-  });
-  // Keep drafts in sync after admin saves (version bumps when accounts change)
+  const { refreshUser, version } = useAuth();
+  const { rows, loading, error: loadError } = useAdminCustomers(version);
+  const [drafts, setDrafts] = useState<Record<string, { checking: string; savings: string }>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Re-seed drafts whenever the database rows change.
   useEffect(() => {
     const init: Record<string, { checking: string; savings: string }> = {};
-    accounts.forEach((u) => {
+    rows.forEach((u) => {
       init[u.id] = {
         checking: u.balance.checking.toFixed(2),
         savings: u.balance.savings.toFixed(2),
       };
     });
     setDrafts(init);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version]);
+  }, [rows]);
 
   const setField = (id: string, key: "checking" | "savings", v: string) => {
     setDrafts((d) => ({ ...d, [id]: { ...d[id], [key]: v } }));
   };
 
-  const save = (id: string) => {
+  const save = async (id: string) => {
     const d = drafts[id];
     const checking = parseFloat(d.checking);
     const savings = parseFloat(d.savings);
+    setError(null);
+    setNotice(null);
     if (!Number.isFinite(checking) || checking < 0) {
-      alert("Checking balance must be a non-negative number.");
+      setError("Checking balance must be a non-negative number.");
       return;
     }
     if (!Number.isFinite(savings) || savings < 0) {
-      alert("Fixed savings balance must be a non-negative number.");
+      setError("Fixed savings balance must be a non-negative number.");
       return;
     }
-    setUserBalance(id, "checking", checking);
-    setUserBalance(id, "savings", savings);
-    alert(`Balances updated for ${accounts.find((u) => u.id === id)?.fullName}.`);
+    setBusy(id);
+    try {
+      await adminSetBalance(id, "checking", checking);
+      await adminSetBalance(id, "savings", savings);
+      // Reload the customer table and any active session from the database.
+      await refreshUser();
+      setNotice(`Balances saved for ${rows.find((u) => u.id === id)?.fullName ?? id}.`);
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not save balances.");
+    } finally {
+      setBusy(null);
+    }
   };
 
   return (
@@ -929,13 +2062,25 @@ function BalancesEditor() {
       <header>
         <h2 className="text-xl font-semibold tracking-tight text-slate-900">Balances</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Edit Checking and Fixed savings balances for each sample user. Changes apply immediately to
-          any active session on this device.
+          Edit Checking and Fixed savings balances for each customer. Saves to Supabase and applies
+          to every device.
         </p>
       </header>
 
+      {loading && <p className="text-xs text-slate-500">Loading customers…</p>}
+      {(error || loadError) && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+          {error ?? loadError}
+        </div>
+      )}
+      {notice && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
+          {notice}
+        </div>
+      )}
+
       <div className="space-y-4">
-        {accounts.map((u) => {
+        {rows.map((u) => {
           const d = drafts[u.id] ?? { checking: "0.00", savings: "0.00" };
           return (
             <div key={u.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -962,9 +2107,10 @@ function BalancesEditor() {
                 </p>
                 <button
                   onClick={() => save(u.id)}
-                  className="inline-flex items-center justify-center rounded-xl bg-river-700 px-4 py-2 text-xs font-semibold text-white hover:bg-river-800"
+                  disabled={busy === u.id}
+                  className="inline-flex items-center justify-center rounded-xl bg-river-700 px-4 py-2 text-xs font-semibold text-white hover:bg-river-800 disabled:opacity-60"
                 >
-                  Save balances
+                  {busy === u.id ? "Saving…" : "Save balances"}
                 </button>
               </div>
             </div>
@@ -1007,48 +2153,41 @@ function BalanceField({
 /* ---------------- Cardholders ---------------- */
 
 function CardholdersEditor() {
-  const { setCardholderName, version } = useAuth();
-  // ALWAYS read the freshest data from the persistent store on every render.
-  const accounts: any[] = getSampleAccounts();
+  const { refreshUser, version } = useAuth();
+  const { rows, loading, error: loadError } = useAdminCustomers(version);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const [drafts, setDrafts] = useState<Record<string, string>>(() => {
-    const init: Record<string, string> = {};
-    accounts.forEach((u) => {
-      u.cards.forEach((c: any) => {
-        init[c.id] = c.cardholderName ?? u.fullName;
-      });
-    });
-    console.log("[RIVERBEND] CardholdersEditor initial drafts:", init);
-    return init;
-  });
-
-  // Re-sync drafts whenever accounts change
   useEffect(() => {
     const init: Record<string, string> = {};
-    accounts.forEach((u) => {
-      u.cards.forEach((c: any) => {
-        init[c.id] = c.cardholderName ?? u.fullName;
-      });
-    });
-    console.log("[RIVERBEND] CardholdersEditor re-sync drafts (version=" + version + "):", init);
+    rows.forEach((u) => u.cards.forEach((c) => (init[c.id] = c.cardholderName ?? u.fullName)));
     setDrafts(init);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version]);
+  }, [rows]);
 
   const setName = (cardId: string, v: string) => {
     setDrafts((d) => ({ ...d, [cardId]: v }));
   };
 
-  const save = () => {
-    console.log("[RIVERBEND] CardholdersEditor.save called with drafts:", drafts);
-    accounts.forEach((u) => {
-      u.cards.forEach((c: any) => {
-        const name = drafts[c.id] ?? u.fullName;
-        console.log("[RIVERBEND] saving cardholder:", u.id, c.id, "=", name);
-        setCardholderName(u.id, c.id, name);
-      });
-    });
-    alert("Cardholder names saved. The user account will show them on next refresh.");
+  const save = async () => {
+    setError(null);
+    setNotice(null);
+    setBusy(true);
+    try {
+      for (const u of rows) {
+        for (const c of u.cards) {
+          const name = drafts[c.id] ?? u.fullName;
+          await adminSetCardholderName(u.id, c.id, name);
+        }
+      }
+      await refreshUser();
+      setNotice("Cardholder names saved to the database.");
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not save cardholder names.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -1056,12 +2195,25 @@ function CardholdersEditor() {
       <header>
         <h2 className="text-xl font-semibold tracking-tight text-slate-900">Cardholders</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Set the name engraved on each card. The user account will display the name you save here.
+          Set the name engraved on each card. Changes are stored in Supabase and shown on the
+          customer's card.
         </p>
       </header>
 
+      {loading && <p className="text-xs text-slate-500">Loading cards…</p>}
+      {(error || loadError) && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+          {error ?? loadError}
+        </div>
+      )}
+      {notice && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
+          {notice}
+        </div>
+      )}
+
       <div className="space-y-5">
-        {accounts.map((u: any) => (
+        {rows.map((u) => (
           <div key={u.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between">
               <div>
@@ -1073,7 +2225,7 @@ function CardholdersEditor() {
             </div>
 
             <div className="mt-4 space-y-3">
-              {u.cards.map((c: any) => (
+              {u.cards.map((c) => (
                 <div
                   key={c.id}
                   className="flex flex-col gap-2 rounded-xl border border-slate-100 bg-slate-50/60 p-3 sm:flex-row sm:items-center"
@@ -1099,20 +2251,10 @@ function CardholdersEditor() {
 
       <button
         onClick={save}
-        className="inline-flex items-center justify-center rounded-xl bg-river-700 px-5 py-3 text-sm font-semibold text-white hover:bg-river-800"
+        disabled={busy}
+        className="inline-flex items-center justify-center rounded-xl bg-river-700 px-5 py-3 text-sm font-semibold text-white hover:bg-river-800 disabled:opacity-60"
       >
-        Save cardholder names
-      </button>
-
-      <button
-        onClick={() => {
-          const raw = localStorage.getItem("riverbend_accounts_v4");
-          console.log("[RIVERBEND DEBUG] localStorage riverbend_accounts_v4 =", raw);
-          alert("Saved data in localStorage:\n\n" + (raw ?? "(empty)"));
-        }}
-        className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-      >
-        Debug: show localStorage data
+        {busy ? "Saving…" : "Save cardholder names"}
       </button>
     </div>
   );
@@ -1121,23 +2263,37 @@ function CardholdersEditor() {
 /* ---------------- Data ---------------- */
 
 function DataTab() {
-  const { content, setContent } = useContent();
+  const { content, setContent, resetContent, loading } = useContent();
+  const { refreshUser } = useAuth();
   const exported = JSON.stringify(content, null, 2);
   const [pasted, setPasted] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const importJson = () => {
+  const importJson = async () => {
+    setError(null);
+    setNotice(null);
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(pasted);
-      // Minimal shape check
-      if (typeof parsed !== "object" || !parsed.hero || !parsed.contact) {
-        alert("That doesn't look like a RIVERBEND content JSON. Paste the full export from the Data tab.");
-        return;
-      }
-      setContent(parsed);
-      setPasted("");
-      alert("Content imported. Refresh the landing site to see updates.");
+      parsed = JSON.parse(pasted);
     } catch (e) {
-      alert("Invalid JSON: " + (e as Error).message);
+      setError("Invalid JSON: " + (e as Error).message);
+      return;
+    }
+    if (typeof parsed !== "object" || !parsed || !("hero" in parsed) || !("contact" in parsed)) {
+      setError("That doesn't look like RIVERBEND content JSON. Paste a full export from this tab.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await setContent(parsed as typeof content);
+      setPasted("");
+      setNotice("Content imported and saved to the database.");
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not import content.");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -1146,20 +2302,33 @@ function DataTab() {
       <header>
         <h2 className="text-xl font-semibold tracking-tight text-slate-900">Data</h2>
         <p className="mt-1 text-sm text-slate-500">
-          View, copy, or restore the landing-page content. Use Export to back up, Import to restore.
+          View, copy, or restore the website content. Everything here lives in Supabase.
         </p>
       </header>
 
-      {/* Status indicators */}
+      {error && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">{error}</div>
+      )}
+      {notice && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">{notice}</div>
+      )}
+
+      {/* Storage status */}
       <div className="grid gap-3 sm:grid-cols-2">
-        <StatusCard
-          label="Landing content"
-          storageKey="riverbend_content_v5"
-        />
-        <StatusCard
-          label="Account data (users, balances, cards, cardholders)"
-          storageKey="riverbend_accounts_v4"
-        />
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Landing content</p>
+          <p className="mt-1 text-sm font-semibold text-slate-900">
+            {loading ? "Loading…" : `${(new Blob([exported]).size / 1024).toFixed(1)} KB in Supabase`}
+          </p>
+          <p className="mt-0.5 font-mono text-[10px] text-slate-400">site_content · slug = default</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+            Account data (users, balances, cards, cardholders)
+          </p>
+          <p className="mt-1 text-sm font-semibold text-slate-900">In Supabase</p>
+          <p className="mt-0.5 font-mono text-[10px] text-slate-400">customers · bank_accounts · cards</p>
+        </div>
       </div>
 
       <div>
@@ -1201,63 +2370,43 @@ function DataTab() {
         />
         <button
           onClick={importJson}
-          disabled={!pasted.trim()}
+          disabled={!pasted.trim() || busy}
           className="mt-2 inline-flex items-center justify-center rounded-xl bg-river-700 px-4 py-2 text-sm font-semibold text-white hover:bg-river-800 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Import JSON
+          {busy ? "Importing…" : "Import JSON"}
         </button>
       </div>
 
       <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs text-rose-900">
-        <p className="font-semibold">Reset all data to defaults</p>
+        <p className="font-semibold">Reset website content to defaults</p>
         <p className="mt-1">
-          This clears all landing content and account data from this device and restores the original
-          demo state. Cannot be undone.
+          Writes the original demo copy back to Supabase. This is a write, not a delete — no rows are
+          removed and account data is untouched.
         </p>
         <button
-          onClick={() => {
-            if (
-              confirm(
-                "Reset ALL RIVERBEND data on this device to defaults? This cannot be undone."
-              )
-            ) {
-              try {
-                Object.keys(window.localStorage)
-                  .filter((k) => k.startsWith("riverbend_"))
-                  .forEach((k) => window.localStorage.removeItem(k));
-                window.location.reload();
-              } catch {}
+          onClick={async () => {
+            if (!confirm("Reset all website content to the original defaults?")) return;
+            setError(null);
+            setNotice(null);
+            setBusy(true);
+            try {
+              await resetContent();
+              clearAdminCache();
+              await refreshUser();
+              setNotice("Website content restored to defaults.");
+            } catch (e) {
+              setError(e instanceof DatabaseError ? e.message : "Could not reset content.");
+            } finally {
+              setBusy(false);
             }
           }}
-          className="mt-3 inline-flex items-center justify-center rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700"
+          disabled={busy}
+          className="mt-3 inline-flex items-center justify-center rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-60"
         >
-          Reset all data
+          {busy ? "Resetting…" : "Reset content"}
         </button>
       </div>
     </div>
   );
 }
 
-function StatusCard({ label, storageKey }: { label: string; storageKey: string }) {
-  const [size, setSize] = useState<string>("(checking…)");
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(storageKey);
-      if (!raw) {
-        setSize("(no data saved — using defaults)");
-      } else {
-        const kb = (new Blob([raw]).size / 1024).toFixed(1);
-        setSize(`${kb} KB saved`);
-      }
-    } catch {
-      setSize("(unable to read)");
-    }
-  }, [storageKey]);
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</p>
-      <p className="mt-1 text-sm font-semibold text-slate-900">{size}</p>
-      <p className="mt-0.5 font-mono text-[10px] text-slate-400">{storageKey}</p>
-    </div>
-  );
-}

@@ -53,7 +53,6 @@ export default function Profile() {
         </Group>
         <Group label={p.securityGroup}>
           <Row label={p.twoFactorLabel} value={p.twoFactorEnabled} badge="ok" />
-          <Row label={p.lastSignInLabel} value="Today, 9:41 AM" />
           <Row label={p.changePasswordLabel} value="" arrow />
         </Group>
         <Group label={p.preferencesGroup}>

@@ -1,10 +1,22 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { RiverbendLogo, IconLock, IconShield } from "./icons";
 import { useContent } from "../admin/store";
-import { useAuth, sampleAccounts } from "../account/auth";
+import { DatabaseError } from "../account/db";
+import { useAuth } from "../account/auth";
+import VerifyCode from "./VerifyCode";
 
 export default function LoginPage() {
   const { content, version } = useContent(); // version re-renders on save
+  // Phase 2: once a challenge is open the password form steps aside for the
+  // six-digit screen. Kept here rather than in App so every place that renders
+  // LoginPage (marketing route and the dashboard gate) gets the same behaviour.
+  const pending = useAuth().pendingChallenge;
+
+  // Coming back from the code screen must leave a usable form, not one stuck on
+  // the spinner the transition set.
+  useEffect(() => {
+    if (!pending) setSubmitting(false);
+  }, [pending]);
   void version;
   const l = content.login;
   const loginCopy = content.account.login;
@@ -13,32 +25,53 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (submitting) return;
     const data = new FormData(e.currentTarget);
     const id = (data.get("identifier") as string).trim();
     const pwd = data.get("password") as string;
     setError("");
 
-    const okResult = signIn(id, pwd);
-    if (!okResult) {
-      setError("Those credentials don't match a sample account. Try the demo accounts shown below.");
+    // Phase 1: password only. On success a six-digit challenge opens and the
+    // verification screen takes over — no session exists yet, so the dashboard
+    // stays closed until the code is accepted.
+    let ticket;
+    try {
+      ticket = await signIn(id, pwd);
+    } catch (err) {
+      // A database failure is NOT the same as a wrong password — say so.
+      setError(
+        err instanceof DatabaseError
+          ? err.message
+          : "We couldn't reach the database to sign you in. Please try again."
+      );
       return;
     }
 
-    // Animated cycle: spinner for ~900ms before redirecting to dashboard
+    if (!ticket) {
+      setError("We couldn't find an account with those details. Check your username and password and try again.");
+      return;
+    }
+
+    // Brief spinner so the transition to the code screen reads as a step rather
+    // than a flicker.
     setSubmitting(true);
-    setTimeout(() => {
-      window.location.hash = "dashboard";
-    }, 900);
   };
 
-  const fillSample = (username: string, password: string) => {
-    const form = document.querySelector("form") as HTMLFormElement | null;
-    if (!form) return;
-    (form.elements.namedItem("identifier") as HTMLInputElement).value = username;
-    (form.elements.namedItem("password") as HTMLInputElement).value = password;
-  };
+
+  if (pending) {
+    return (
+      <VerifyCode
+        onVerified={() => {
+          window.location.hash = "dashboard";
+        }}
+        onCancel={() => {
+          window.location.hash = "login";
+        }}
+      />
+    );
+  }
 
   return (
     <section id="login-page" className="relative overflow-hidden py-20 sm:py-28">
@@ -145,30 +178,6 @@ export default function LoginPage() {
             >
               Get started with {content.brand.name}
             </a>
-          </div>
-
-          {/* Sample accounts */}
-          <div className="mt-5 rounded-2xl border border-river-200 bg-river-50/50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wider text-river-800">
-              Sample accounts · click to fill
-            </p>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              {sampleAccounts.map((a) => (
-                <button
-                  key={a.id}
-                  onClick={() => fillSample(a.username, a.password)}
-                  className="rounded-xl border border-river-200 bg-white p-3 text-left transition-all hover:-translate-y-0.5 hover:shadow-md"
-                >
-                  <p className="text-sm font-semibold text-slate-900">{a.fullName}</p>
-                  <p className="mt-0.5 text-[11px] text-slate-500">
-                    Username: <code className="font-mono">{a.username}</code>
-                  </p>
-                  <p className="text-[11px] text-slate-500">
-                    Password: <code className="font-mono">{a.password}</code>
-                  </p>
-                </button>
-              ))}
-            </div>
           </div>
         </div>
 

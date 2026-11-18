@@ -24,6 +24,13 @@ Then open the local URL Vite prints (usually http://localhost:5173).
 
 ## Important
 
-- The admin and demo customer login are still browser/local-storage based at this stage; they are not secure production authentication and changes are not shared across devices.
+- Supabase is wired in and is the single source of truth. Customer balances, cards,
+  transactions, credentials and the admin's website-content edits are read from and
+  written to the database, so they **do** appear on other browsers and devices.
+- Connection settings live in `.env` (git-ignored). Copy `.env.example` and set
+  `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Both ship to the browser by
+  design, so only ever use the publishable (anon) key — never a service_role key.
+- Sign-in is a demo credential check against `customers.demo_password` (plaintext),
+  and the admin panel unlocks with a hard-coded demo passphrase kept in the browser.
+  Neither is real authentication.
 - Do not use this demo as a real financial service or store real customer information.
-- Supabase has not yet been wired into the app.

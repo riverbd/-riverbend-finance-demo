@@ -16,4 +16,18 @@ export default defineConfig({
       "@": path.resolve(__dirname, "src"),
     },
   },
+  // Bind to all interfaces and accept the proxied preview host so the app
+  // can be viewed in a remote/embedded browser preview.
+  server: {
+    host: "0.0.0.0",
+    port: 5173,
+    strictPort: true,
+    allowedHosts: [".e2b.app", "localhost", ".localhost"],
+  },
+  preview: {
+    host: "0.0.0.0",
+    port: 4173,
+    strictPort: true,
+    allowedHosts: [".e2b.app", "localhost", ".localhost"],
+  },
 });

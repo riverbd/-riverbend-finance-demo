@@ -1,0 +1,65 @@
+/**
+ * Shape of customer data as the UI consumes it.
+ *
+ * These mirror the database rows in supabase/migrations/001_riverbend_schema.sql
+ * but keep the exact field names the existing components already render
+ * (`balance.checking`, `card.last4`, `transaction.merchant`, …) so no UI code
+ * had to change.
+ */
+
+export type AccountKind = "checking" | "savings";
+
+/** Mirrors bank_accounts.status (migration 006). */
+export type AccountStatus = "active" | "inactive";
+
+export type Card = {
+  id: string;
+  label: string;
+  last4: string;
+  network: "Visa" | "Mastercard";
+  expiry: string;
+  frozen: boolean;
+  cardholderName?: string;
+};
+
+export type Transaction = {
+  id: string;
+  merchant: string;
+  category: string;
+  /** Signed: credits positive, debits negative. */
+  amount: number;
+  /** ISO date, YYYY-MM-DD (from `transactions.occurred_on`). */
+  date: string;
+  account: AccountKind;
+  /**
+   * True for generated demonstration history (migration 007). The activity list
+   * labels these rows so they are never presented as genuine financial records.
+   */
+  isDemo: boolean;
+};
+
+/**
+ * A customer as loaded from Supabase.
+ *
+ * Deliberately has NO `password` field: the schema stores no credentials, so
+ * there is nothing to load. Demo password checking stays client-side for now.
+ */
+export type CustomerAccount = {
+  id: string;
+  fullName: string;
+  username: string;
+  email: string;
+  /** ISO date as stored, e.g. "2019-04-12". */
+  memberSince: string;
+  memberId: string;
+  initials: string;
+  balance: { checking: number; savings: number };
+  /**
+   * Admin-controlled status per account. Only `checking` is enforced today:
+   * when it is "inactive" the database refuses external transfers from it.
+   * Internal moves between the customer's own accounts stay available.
+   */
+  status: { checking: AccountStatus; savings: AccountStatus };
+  cards: Card[];
+  transactions: Transaction[];
+};
