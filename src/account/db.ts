@@ -122,8 +122,20 @@ type TransactionRow = {
   amount: string | number;
   occurred_on: string;
   account_kind: AccountKind;
-  /** Added by migration 007. Absent on older databases → treated as false. */
-  is_demo?: boolean | null;
+};
+
+/**
+ * The same row, plus the demonstration flag.
+ *
+ * `is_demo` is added by migration 007, so it is selected separately from the
+ * main transaction query. That keeps the history loadable on a database where
+ * 007 has not been applied yet: the column is simply not asked for, rather
+ * than the whole select failing with "column transactions.is_demo does not
+ * exist" and taking the account page down with it.
+ */
+type TransactionDemoRow = {
+  id: string;
+  is_demo: boolean | null;
 };
 
 /** numeric comes back from PostgREST as a string; the UI needs a number. */
@@ -135,7 +147,17 @@ function mapCustomer(
   row: CustomerRow,
   accounts: AccountRow[],
   cards: CardRow[],
-  transactions: TransactionRow[]
+  transactions: TransactionRow[],
+  /**
+   * Ids of the rows flagged as generated demonstration history.
+   *
+   * Empty when migration 007 has not been applied — or when its `is_demo`
+   * column could not be read — in which case every transaction is presented as
+   * non-demonstration. That is the safe direction for a missing label: the
+   * data is still real database data and still renders, and only the badge is
+   * absent until 007 is applied.
+   */
+  demoIds: ReadonlySet<string>
 ): CustomerAccount {
   const balance = { checking: 0, savings: 0 };
   // Defaults to active: a row written before migration 006 has no status, and
@@ -185,7 +207,7 @@ function mapCustomer(
         amount: num(t.amount),
         date: t.occurred_on,
         account: t.account_kind,
-        isDemo: t.is_demo === true,
+        isDemo: demoIds.has(t.id),
       })
     ),
   };
@@ -194,6 +216,59 @@ function mapCustomer(
 // ---------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------
+
+/** Postgres's SQLSTATE for "that column does not exist". */
+const UNDEFINED_COLUMN = "42703";
+
+/**
+ * True only when the error says this particular column is absent.
+ *
+ * Postgres reports a missing column as 42703 when the select reaches it, and
+ * newer PostgREST builds reject it earlier from the schema cache as PGRST204.
+ * Both mean the same thing here — migration 007 has not been applied — but the
+ * check stays keyed to the column name, so it cannot swallow an unrelated
+ * failure that happens to carry one of those codes.
+ */
+function isMissingColumn(
+  error: { code?: string; message?: string },
+  column: string
+): boolean {
+  if (error.code === UNDEFINED_COLUMN) return true;
+  return error.code === "PGRST204" && (error.message ?? "").includes(column);
+}
+
+/**
+ * Ids of this customer's generated demonstration rows, or an empty set.
+ *
+ * `is_demo` arrives with migration 007 rather than with the base schema, and
+ * the frontend may legitimately reach a database where 007 has not been
+ * applied yet. So it is read separately, and only its own absence is tolerated:
+ *
+ *   * column missing (42703) -> empty set, every row displays as non-demo.
+ *     This is the pre-007 database, and the account page must still work.
+ *   * anything else - network, auth, RLS, an unknown error - is rethrown, so a
+ *     real failure is never disguised as "there are no demo rows".
+ *
+ * Once 007 is applied this query starts returning rows and the badges appear
+ * without any further change.
+ */
+async function fetchDemoRowIds(customerId: string): Promise<ReadonlySet<string>> {
+  const { data, error } = await supabase
+    .from("transactions")
+    .select("id, is_demo")
+    .eq("customer_id", customerId)
+    .eq("is_demo", true)
+    .returns<TransactionDemoRow[]>();
+
+  if (error) {
+    // Only a missing column is expected. Everything else is a genuine failure
+    // and must reach the caller.
+    if (isMissingColumn(error, "is_demo")) return new Set<string>();
+    throw toDatabaseError(error, "Loading demonstration labels");
+  }
+
+  return new Set((data ?? []).filter((r) => r.is_demo === true).map((r) => r.id));
+}
 
 /**
  * Load one customer by its stable client_ref, including balances, cards and
@@ -213,7 +288,7 @@ export async function fetchCustomerAccount(clientRef: string): Promise<CustomerA
   if (customerError) throw toDatabaseError(customerError, "Loading your account");
   if (!customers) return null;
 
-  const [accounts, cards, transactions] = await Promise.all([
+  const [accounts, cards, transactions, demoIds] = await Promise.all([
     supabase
       .from("bank_accounts")
       .select("kind, balance, status")
@@ -227,7 +302,7 @@ export async function fetchCustomerAccount(clientRef: string): Promise<CustomerA
       .returns<CardRow[]>(),
     supabase
       .from("transactions")
-      .select("id, client_ref, merchant, category, amount, occurred_on, account_kind, is_demo")
+      .select("id, client_ref, merchant, category, amount, occurred_on, account_kind")
       .eq("customer_id", customers.id)
       .order("occurred_on", { ascending: false })
       .order("created_at", { ascending: false })
@@ -235,6 +310,9 @@ export async function fetchCustomerAccount(clientRef: string): Promise<CustomerA
       // thousand rows, and PostgREST caps an unbounded select anyway.
       .limit(5000)
       .returns<TransactionRow[]>(),
+    // Separate request: this is the only query that mentions is_demo, so a
+    // database without migration 007 still loads its history normally.
+    fetchDemoRowIds(customers.id),
   ]);
 
   for (const [label, result] of [
@@ -249,7 +327,8 @@ export async function fetchCustomerAccount(clientRef: string): Promise<CustomerA
     customers,
     accounts.data ?? [],
     cards.data ?? [],
-    transactions.data ?? []
+    transactions.data ?? [],
+    demoIds
   );
 }
 
