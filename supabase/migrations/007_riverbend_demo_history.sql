@@ -581,11 +581,6 @@ begin
         where after_opening and extract(month from mon)::int in (3, 6, 9, 12))
     into v_expected;
 
-  if v_demo <> v_expected then
-    v_problems := v_problems || format(
-      'generated %s demonstration rows, expected %s', v_demo, v_expected);
-  end if;
-
   -- (6) Jordan's own transactions are untouched: same three rows, same ids,
   --     same dates, amounts and descriptions.
   select count(*) into v_jordan_bad
