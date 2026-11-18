@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { formatDate, formatMoney } from "./auth";
+import { formatDate } from "./auth";
 import type { Transaction } from "./types";
+import { ACTIVITY_PAGE_SIZE } from "./AllActivity";
+import { TransactionRow } from "./TransactionRow";
 import {
   addMonths,
   canGoNext,
@@ -44,17 +46,23 @@ export type ActivityCopy = {
   prevMonth: string;
   nextMonth: string;
   earliestLabel: string;
+  seeAll: string;
+  seeAllHint: string;
+  showingCount: string;
 };
 
 export default function CheckingActivity({
   transactions,
   memberSince,
   copy,
+  onSeeAll,
 }: {
   transactions: Transaction[];
   /** ISO date the account was opened — the earliest month we may page to. */
   memberSince: string;
   copy: ActivityCopy;
+  /** Opens the combined all-activity view. */
+  onSeeAll: () => void;
 }) {
   const today = todayISO();
   const earliest = monthOf(memberSince);
@@ -100,6 +108,12 @@ export default function CheckingActivity({
         .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
     [transactions, window]
   );
+
+  // Show at most a page of rows here; "See All" opens the full, unpaginated
+  // ledger. The cap applies to whatever period is on screen, so a busy month
+  // never turns into an endless scroll inside the account card.
+  const visible = rows.slice(0, ACTIVITY_PAGE_SIZE);
+  const hasMore = rows.length > visible.length;
 
   const isFiltered = !!(range && (range.start || range.end));
   const nextBlocked = !canGoNext(month, latest);
@@ -287,50 +301,49 @@ export default function CheckingActivity({
             )}
           </div>
         ) : (
-          rows.map((t, i) => (
-            <div
+          visible.map((t, i) => (
+            <TransactionRow
               key={t.id}
-              className={`flex items-center justify-between gap-3 px-4 py-3 ${
-                i !== rows.length - 1 ? "border-b border-slate-100" : ""
-              }`}
-            >
-              <div className="flex min-w-0 items-center gap-3">
-                <div
-                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${cat(t.category)}`}
-                >
-                  {t.merchant[0]}
-                </div>
-                <div className="min-w-0">
-                  <p className="break-words text-sm font-medium text-slate-900">
-                    {t.merchant}
-                  </p>
-                  <p className="flex flex-wrap items-center gap-x-1 text-[11px] text-slate-500">
-                    <span>{t.category}</span>
-                    <span aria-hidden="true">·</span>
-                    <span>{formatDate(t.date)}</span>
-                    {t.isDemo && (
-                      <span
-                        className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500"
-                        title={copy.demoNote}
-                      >
-                        {copy.demoBadge}
-                      </span>
-                    )}
-                  </p>
-                </div>
-              </div>
-              <p
-                className={`shrink-0 text-sm font-semibold ${
-                  t.amount >= 0 ? "text-emerald-600" : "text-slate-900"
-                }`}
-              >
-                {t.amount >= 0 ? "+" : ""}
-                {formatMoney(t.amount)}
-              </p>
-            </div>
+              transaction={t}
+              demoBadge={copy.demoBadge}
+              demoNote={copy.demoNote}
+              divided={i !== visible.length - 1}
+            />
           ))
         )}
       </div>
+
+      {/* ---- see all ------------------------------------------------------
+          A real anchor, not a styled span: it is focusable, keyboard
+          activatable, announced as a link, and shows a pointer cursor. The
+          click is intercepted so the SPA switches view without reloading, but
+          the href keeps it a genuine hyperlink for assistive tech. It is shown
+          whenever there is anything beyond the page, and also when a period has
+          more history worth opening. */}
+      <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+        <p className="text-[11px] text-slate-500" data-testid="activity-count">
+          {copy.showingCount
+            .replace("{shown}", String(visible.length))
+            .replace("{total}", String(rows.length))}
+        </p>
+        <a
+          href="#all-activity"
+          onClick={(e) => {
+            e.preventDefault();
+            onSeeAll();
+          }}
+          data-testid="see-all-link"
+          className="inline-flex items-center gap-1 text-sm font-semibold text-river-700 underline underline-offset-2 hover:text-river-800"
+        >
+          {copy.seeAll}
+        </a>
+      </div>
+
+      {hasMore && (
+        <p className="px-1 text-[11px] leading-relaxed text-slate-400">
+          {copy.seeAllHint.replace("{total}", String(rows.length))}
+        </p>
+      )}
 
       {rows.some((t) => t.isDemo) && (
         <p className="px-1 text-[11px] leading-relaxed text-slate-400">{copy.demoNote}</p>
@@ -348,23 +361,3 @@ function yearsIn(earliest: MonthKey, latest: MonthKey): string[] {
   return out;
 }
 
-function cat(c: string) {
-  const map: Record<string, string> = {
-    Income: "bg-emerald-100 text-emerald-700",
-    Food: "bg-amber-100 text-amber-700",
-    Groceries: "bg-violet-100 text-violet-700",
-    Transfer: "bg-river-100 text-river-700",
-    Subscriptions: "bg-rose-100 text-rose-700",
-    Travel: "bg-sky-100 text-sky-700",
-    Health: "bg-pink-100 text-pink-700",
-    Software: "bg-indigo-100 text-indigo-700",
-    Housing: "bg-slate-200 text-slate-700",
-    Utilities: "bg-cyan-100 text-cyan-700",
-    Insurance: "bg-teal-100 text-teal-700",
-    Transport: "bg-blue-100 text-blue-700",
-    Shopping: "bg-fuchsia-100 text-fuchsia-700",
-    Entertainment: "bg-orange-100 text-orange-700",
-    Charity: "bg-lime-100 text-lime-700",
-  };
-  return map[c] ?? "bg-slate-100 text-slate-700";
-}

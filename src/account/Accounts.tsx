@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useAuth, formatMoney } from "./auth";
 import { useContent } from "../admin/store";
 import CheckingActivity from "./CheckingActivity";
+import AllActivity from "./AllActivity";
 
 export default function Accounts() {
   const { user } = useAuth();
@@ -9,7 +10,19 @@ export default function Accounts() {
   void version;
   const a = content.account.accounts;
   const [tab, setTab] = useState<"checking" | "savings">("checking");
+  // The full ledger is a dedicated view, not a mode of the account cards, so
+  // "See All" swaps the whole page body rather than expanding the list.
+  const [showAllActivity, setShowAllActivity] = useState(false);
   if (!user) return null;
+
+  if (showAllActivity) {
+    return (
+      <AllActivity
+        transactions={user.transactions}
+        onBack={() => setShowAllActivity(false)}
+      />
+    );
+  }
 
   const isSavings = tab === "savings";
   const activityLabel = a.activityHeading.replace(
@@ -77,6 +90,7 @@ export default function Accounts() {
             transactions={user.transactions}
             memberSince={user.memberSince}
             copy={a}
+            onSeeAll={() => setShowAllActivity(true)}
           />
         )}
       </section>

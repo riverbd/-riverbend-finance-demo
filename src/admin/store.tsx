@@ -61,6 +61,14 @@ export type ContentState = {
       prevMonth: string;
       nextMonth: string;
       earliestLabel: string;
+      /** Account activity is capped at this many rows; "See All" opens the rest. */
+      seeAll: string;
+      seeAllHint: string;
+      showingCount: string;
+      allActivityHeading: string;
+      allActivitySub: string;
+      allActivityFilterLabel: string;
+      seeAllBack: string;
     };
     cards: {
       heading: string;
@@ -233,6 +241,13 @@ export const defaultContent: ContentState = {
       rangeClear: "Clear dates",
       prevMonth: "Previous month",
       nextMonth: "Next month",
+      seeAll: "See All",
+      seeAllHint: "Showing {total} transactions for this period. See All opens your full history.",
+      showingCount: "Showing {shown} of {total}",
+      allActivityHeading: "All activity",
+      allActivitySub: "Your complete history — {count} transactions, newest first.",
+      allActivityFilterLabel: "Filter by account",
+      seeAllBack: "Back to accounts",
       earliestLabel: "Earliest",
     },
     cards: {
