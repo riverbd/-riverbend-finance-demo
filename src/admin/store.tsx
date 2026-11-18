@@ -74,6 +74,8 @@ export type ContentState = {
       promoRate: string;
       promoBody: string;
       promoNote: string;
+      /** Milestone 9 — discreet "ask your account manager" line. */
+      promoContact: string;
       /** Separator sitting between an account's name and its identifier. */
       accountIdSeparator: string;
     };
@@ -276,6 +278,7 @@ export const defaultContent: ContentState = {
       promoBody:
         "Put your savings to work. Grow your balance with one of our most competitive fixed savings rates, applied to the full term of your deposit.",
       promoNote: "Illustrative rate. Existing balances and transactions are unchanged.",
+      promoContact: "Call your account manager for more details.",
       accountIdSeparator: "·",
       earliestLabel: "Earliest",
     },

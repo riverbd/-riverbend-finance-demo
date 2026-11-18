@@ -16,11 +16,13 @@ export default function SavingsPromo({
   rate,
   body,
   note,
+  contact,
 }: {
   eyebrow: string;
   rate: string;
   body: string;
   note: string;
+  contact: string;
 }) {
   return (
     <section
@@ -71,6 +73,30 @@ export default function SavingsPromo({
       {note && (
         <p className="relative mt-4 border-t border-white/15 pt-3 text-[10px] leading-relaxed text-white/60">
           {note}
+        </p>
+      )}
+
+      {/* Discreet, but at 12px rather than the note's 10px so it reads as
+          something the customer is meant to act on rather than fine print.
+          No new border or panel: it stays part of the card's footer. */}
+      {contact && (
+        <p
+          data-testid="savings-promo-contact"
+          className="relative mt-2 flex items-start gap-1.5 text-xs leading-relaxed text-white/75"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.8}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+            className="mt-px h-3.5 w-3.5 shrink-0 text-white/60"
+          >
+            <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .3 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2Z" />
+          </svg>
+          <span>{contact}</span>
         </p>
       )}
     </section>

@@ -100,6 +100,7 @@ export default function Accounts({ initialView = "list" }: { initialView?: "list
           rate={a.promoRate}
           body={a.promoBody}
           note={a.promoNote}
+          contact={a.promoContact}
         />
       )}
 
