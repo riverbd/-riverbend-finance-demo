@@ -110,22 +110,41 @@ create index if not exists transactions_activity_idx
 -- Once the eight rows are gone this statement matches nothing, so re-running
 -- deletes nothing.
 -- ----------------------------------------------------------------------------
+-- The eight rows this file is authorised to remove, named by primary key. They
+-- are listed once, here, so the DELETE, the "nothing else was touched" check
+-- and the "no late activity" check all agree on exactly the same set.
+--
+-- Temp tables are dropped first so a second run on the same connection — which
+-- is what the SQL Editor does — cannot trip over "relation already exists".
+drop table if exists rb_retired;
+create temporary table rb_retired on commit preserve rows as
+select v.id::uuid as id
+  from (values
+    ('30000000-0000-4000-8000-000000000001'),
+    ('30000000-0000-4000-8000-000000000002'),
+    ('30000000-0000-4000-8000-000000000003'),
+    ('30000000-0000-4000-8000-000000000004'),
+    ('30000000-0000-4000-8000-000000000005'),
+    ('30000000-0000-4000-8000-000000000006'),
+    ('30000000-0000-4000-8000-000000000007'),
+    ('30000000-0000-4000-8000-000000000008')
+  ) as v(id);
+
+-- Record every row that already exists, before this file changes anything.
+-- The verification gate uses it to prove the two things that matter about
+-- pre-existing data: no such row was removed, and no such row was invented.
+drop table if exists rb_preexisting;
+create temporary table rb_preexisting on commit preserve rows as
+select t.id, t.customer_id, t.client_ref, t.account_kind, t.occurred_on, t.amount
+  from public.transactions t;
+
 delete from public.transactions t
  using public.customers c
  where t.customer_id = c.id
    and c.client_ref = 'demo-1'
    and t.is_demo = false
    and t.client_ref in ('t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8')
-   and t.id in (
-     '30000000-0000-4000-8000-000000000001',
-     '30000000-0000-4000-8000-000000000002',
-     '30000000-0000-4000-8000-000000000003',
-     '30000000-0000-4000-8000-000000000004',
-     '30000000-0000-4000-8000-000000000005',
-     '30000000-0000-4000-8000-000000000006',
-     '30000000-0000-4000-8000-000000000007',
-     '30000000-0000-4000-8000-000000000008'
-   )
+   and t.id in (select id from rb_retired)
    and t.occurred_on >= date '2026-02-01'
    and t.occurred_on <  date '2026-03-01';
 
@@ -151,6 +170,108 @@ comment on function public.riverbend_demo_unit(text) is
 -- the default PUBLIC grant keeps it off the anon/authenticated API surface.
 revoke all on function public.riverbend_demo_unit(text) from public;
 
+-- ----------------------------------------------------------------------------
+-- 3a. The history windows (shared by generation and verification)
+-- ----------------------------------------------------------------------------
+-- `cutoff` is the first date that must have no activity; generation stops the
+-- month before it. Both windows are explicit statements of product intent
+-- rather than inferences from the current contents of the ledger, so the result
+-- is the same in every environment and does not drift as real rows are added.
+--
+-- Defined once, here, so the verification block in step 4 asserts against the
+-- same dates the generator was given rather than a second copy that could
+-- drift from it.
+--
+-- These are session-scoped (ON COMMIT PRESERVE ROWS) and dropped first, so
+-- re-running the file on the same connection — which is what the SQL Editor
+-- does — cannot trip over "relation already exists".
+-- ----------------------------------------------------------------------------
+drop table if exists rb_window;
+drop table if exists rb_range;
+drop table if exists rb_income;
+drop table if exists rb_tpl;
+
+create temporary table rb_window on commit preserve rows as
+with w as (
+  select * from (values
+    ('demo-1', 'Alex Morgan',   date '2022-07-01'),
+    ('demo-2', 'Jordan Reyes',  date '2026-02-01')
+  ) as v(client_ref, label, cutoff)
+)
+select c.id,
+       c.client_ref,
+       c.member_since,
+       date_trunc('month', c.member_since)::date as open_month,
+       date_trunc('month', w.cutoff)::date          as cutoff_month
+  from public.customers c
+  join w on w.client_ref = c.client_ref
+ where date_trunc('month', w.cutoff) > date_trunc('month', c.member_since);
+
+
+create temporary table rb_range on commit preserve rows as
+select m.*, row_number() over (partition by m.id order by m.mon) as n
+  from (
+    select w.id, w.client_ref, w.member_since, w.open_month,
+           g.mon::date as mon,
+           (g.mon::date > w.open_month) as after_opening
+      from rb_window w
+     cross join lateral generate_series(
+                w.open_month::timestamp,
+                (w.cutoff_month - interval '1 month')::timestamp,
+                interval '1 month') as g(mon)
+  ) m;
+
+-- Each customer's payroll, already present in their seeded rows, plus the
+-- factor that scales every spending pattern to that income so the freelancer
+-- on 1,850 is not charged the 3,200 salary's rent.
+create temporary table rb_income on commit preserve rows as
+select * from (values
+  ('demo-1', 'Payroll · Northwind Group', 3200.00,  42.00, 1.000000),
+  ('demo-2', 'Payroll · Freelance',       1850.00, 240.00, 0.578125)
+) as v(client_ref, merchant, base, spread, factor);
+
+-- Monthly patterns. `base` is a magnitude and `sgn` carries the direction, so
+-- a spend can never come out as a credit. Days stay within 1..28 so a
+-- generated row is always inside its own month, and `season` restricts a
+-- pattern to the months it plausibly happens in.
+create temporary table rb_tpl on commit preserve rows as
+select * from (values
+  -- Housing and the bills that come with it.
+  ( 1, 'Housing',       'Rent · Vilnius apartment',    950.00,   0.00, -1,  3,  3, null::int[]),
+  ( 2, 'Insurance',     'Home insurance',               42.00,   0.00, -1,  5,  5, null),
+  ( 3, 'Utilities',     'Telia internet',               29.00,   0.00, -1,  6,  6, null),
+  ( 4, 'Utilities',     'Mobile · Tele2',               18.00,   0.00, -1,  7,  7, null),
+  ( 5, 'Utilities',     'Elektros tinklai',             61.20,  26.40, -1, 18, 22, null),
+  -- Everyday living.
+  ( 6, 'Groceries',     'Rimi Vilnius',                 62.40,  33.10, -1,  4,  9, null),
+  ( 7, 'Groceries',     'Iki supermarket',              48.10,  21.60, -1, 21, 24, null),
+  ( 8, 'Food',          'Coffee & Co.',                  4.60,   1.80, -1, 10, 14, null),
+  ( 9, 'Food',          'Lunch',                        13.50,   6.20, -1, 26, 28, null),
+  (10, 'Food',          'Restaurant · Ertlio namas',    78.40,  34.80, -1, 19, 22, null),
+  (11, 'Transport',     'Vilnius public transport',     12.40,   8.20, -1, 20, 24, null),
+  (12, 'Transport',     'Fuel · Circle K',              62.00,  28.00, -1, 23, 25, null),
+  -- Subscriptions and health.
+  (13, 'Subscriptions', 'Spotify',                      11.99,   0.00, -1, 15, 15, null),
+  (14, 'Software',      'Adobe Creative Cloud',         24.99,   0.00, -1, 16, 16, null),
+  (15, 'Health',        'Gym membership',               38.00,   0.00, -1, 17, 17, null),
+  -- Discretionary, a refund, and the monthly savings sweep.
+  (16, 'Shopping',      'Amazon',                       68.30,  51.70, -1, 25, 27, null),
+  (17, 'Shopping',      'Bookstore · Vaga',             22.40,   9.60, -1, 12, 14, null),
+  (18, 'Entertainment', 'Forum Cinemas',                24.00,  11.00, -1, 28, 28, null),
+  (19, 'Charity',       'Donation · Caritas',           15.00,   0.00, -1, 11, 11, null),
+  (20, 'Income',        'Refund · Amazon',              38.40,  26.10,  1, 12, 26, null),
+  (21, 'Transfer',      'Transfer to Fixed savings',   240.00, 160.00, -1, 27, 28, null),
+  -- Occasional, in the months they actually happen.
+  (22, 'Travel',        'Ryanair · Vilnius',            92.00,  61.00, -1,  2, 12, array[6,7,8,12]),
+  (23, 'Groceries',     'Christmas market',             84.00,  45.00, -1, 12, 20, array[12]),
+  (24, 'Health',        'Pharmacy',                     21.30,  12.40, -1,  5, 25, array[1,2,11]),
+  (25, 'Shopping',      'Zara',                         76.40,  38.20, -1,  3, 24, array[3,4,9,10]),
+  (26, 'Travel',        'Vilnius → Riga train',         29.00,   0.00, -1,  6,  6, array[5,9])
+) as v(slot, category, merchant, base, spread, sgn, day_lo, day_hi, season);
+
+-- ----------------------------------------------------------------------------
+-- 3b. Generate the history
+-- ----------------------------------------------------------------------------
 do $$
 declare
   v_inserted int;
@@ -161,87 +282,6 @@ begin
     return;
   end if;
 
-  -- The per-customer history window. `cutoff` is the first date that must have
-  -- no activity; generation stops the month before it. Both windows are
-  -- explicit statements of product intent rather than inferences from the
-  -- current contents of the ledger, so the result is the same in every
-  -- environment and does not drift as real rows are added.
-  create temporary table rb_window on commit preserve rows as
-  with w as (
-    select * from (values
-      ('demo-1', 'Alex Morgan',   date '2022-07-01'),
-      ('demo-2', 'Jordan Reyes',  date '2026-02-01')
-    ) as v(client_ref, label, cutoff)
-  )
-  select c.id,
-         c.client_ref,
-         c.member_since,
-         date_trunc('month', c.member_since)::date as open_month,
-         date_trunc('month', w.cutoff)::date          as cutoff_month
-    from public.customers c
-    join w on w.client_ref = c.client_ref
-   where date_trunc('month', w.cutoff) > date_trunc('month', c.member_since);
-
-  create temporary table rb_range on commit preserve rows as
-  select m.*, row_number() over (partition by m.id order by m.mon) as n
-    from (
-      select w.id, w.client_ref, w.member_since, w.open_month,
-             g.mon::date as mon,
-             (g.mon::date > w.open_month) as after_opening
-        from rb_window w
-       cross join lateral generate_series(
-                  w.open_month::timestamp,
-                  (w.cutoff_month - interval '1 month')::timestamp,
-                  interval '1 month') as g(mon)
-    ) m;
-
-  -- Each customer's payroll, already present in their seeded rows, plus the
-  -- factor that scales every spending pattern to that income so the freelancer
-  -- on 1,850 is not charged the 3,200 salary's rent.
-  create temporary table rb_income on commit preserve rows as
-  select * from (values
-    ('demo-1', 'Payroll · Northwind Group', 3200.00,  42.00, 1.000000),
-    ('demo-2', 'Payroll · Freelance',       1850.00, 240.00, 0.578125)
-  ) as v(client_ref, merchant, base, spread, factor);
-
-  -- Monthly patterns. `base` is a magnitude and `sgn` carries the direction, so
-  -- a spend can never come out as a credit. Days stay within 1..28 so a
-  -- generated row is always inside its own month, and `season` restricts a
-  -- pattern to the months it plausibly happens in.
-  create temporary table rb_tpl on commit preserve rows as
-  select * from (values
-    -- Housing and the bills that come with it.
-    ( 1, 'Housing',       'Rent · Vilnius apartment',    950.00,   0.00, -1,  3,  3, null::int[]),
-    ( 2, 'Insurance',     'Home insurance',               42.00,   0.00, -1,  5,  5, null),
-    ( 3, 'Utilities',     'Telia internet',               29.00,   0.00, -1,  6,  6, null),
-    ( 4, 'Utilities',     'Mobile · Tele2',               18.00,   0.00, -1,  7,  7, null),
-    ( 5, 'Utilities',     'Elektros tinklai',             61.20,  26.40, -1, 18, 22, null),
-    -- Everyday living.
-    ( 6, 'Groceries',     'Rimi Vilnius',                 62.40,  33.10, -1,  4,  9, null),
-    ( 7, 'Groceries',     'Iki supermarket',              48.10,  21.60, -1, 21, 24, null),
-    ( 8, 'Food',          'Coffee & Co.',                  4.60,   1.80, -1, 10, 14, null),
-    ( 9, 'Food',          'Lunch',                        13.50,   6.20, -1, 26, 28, null),
-    (10, 'Food',          'Restaurant · Ertlio namas',    78.40,  34.80, -1, 19, 22, null),
-    (11, 'Transport',     'Vilnius public transport',     12.40,   8.20, -1, 20, 24, null),
-    (12, 'Transport',     'Fuel · Circle K',              62.00,  28.00, -1, 23, 25, null),
-    -- Subscriptions and health.
-    (13, 'Subscriptions', 'Spotify',                      11.99,   0.00, -1, 15, 15, null),
-    (14, 'Software',      'Adobe Creative Cloud',         24.99,   0.00, -1, 16, 16, null),
-    (15, 'Health',        'Gym membership',               38.00,   0.00, -1, 17, 17, null),
-    -- Discretionary, a refund, and the monthly savings sweep.
-    (16, 'Shopping',      'Amazon',                       68.30,  51.70, -1, 25, 27, null),
-    (17, 'Shopping',      'Bookstore · Vaga',             22.40,   9.60, -1, 12, 14, null),
-    (18, 'Entertainment', 'Forum Cinemas',                24.00,  11.00, -1, 28, 28, null),
-    (19, 'Charity',       'Donation · Caritas',           15.00,   0.00, -1, 11, 11, null),
-    (20, 'Income',        'Refund · Amazon',              38.40,  26.10,  1, 12, 26, null),
-    (21, 'Transfer',      'Transfer to Fixed savings',   240.00, 160.00, -1, 27, 28, null),
-    -- Occasional, in the months they actually happen.
-    (22, 'Travel',        'Ryanair · Vilnius',            92.00,  61.00, -1,  2, 12, array[6,7,8,12]),
-    (23, 'Groceries',     'Christmas market',             84.00,  45.00, -1, 12, 20, array[12]),
-    (24, 'Health',        'Pharmacy',                     21.30,  12.40, -1,  5, 25, array[1,2,11]),
-    (25, 'Shopping',      'Zara',                         76.40,  38.20, -1,  3, 24, array[3,4,9,10]),
-    (26, 'Travel',        'Vilnius → Riga train',         29.00,   0.00, -1,  6,  6, array[5,9])
-  ) as v(slot, category, merchant, base, spread, sgn, day_lo, day_hi, season);
 
   -- ---- 3a. Spending rows ------------------------------------------------
   -- Written first because the opening deposit below is derived from them.
@@ -408,6 +448,9 @@ begin
    group by r.id, r.member_since
   on conflict (customer_id, client_ref) do nothing;
 
+  get diagnostics v_inserted = row_count;
+  v_total := v_total + v_inserted;
+
   insert into public.transactions
     (customer_id, client_ref, merchant, category, amount, occurred_on, account_kind, is_demo)
   select r.id,
@@ -439,20 +482,32 @@ end;
 $$;
 
 -- ----------------------------------------------------------------------------
--- 4. Verification (read-only, informational)
+-- 4. Verification gate
 -- ----------------------------------------------------------------------------
--- Expected shape on a freshly seeded database:
+-- Expected shape:
 --   demo-1  checking 2019-04-12 .. 2022-06   savings 2019-04-12 .. 2022-06
 --   demo-2  checking 2022-09-30 .. 2026-01   savings 2022-09-30 .. 2026-01
--- Alex must have no row at all after 2022-06-30, generated or otherwise.
+--
+-- Every assertion below is enforced. Any violation RAISEs, which aborts the
+-- transaction: the DELETE of Alex's eight rows, the new is_demo column, the
+-- index, the helper function and every generated row are all rolled back
+-- together, leaving the database exactly as it was before the file ran. Nothing
+-- is committed on a partial or suspicious result.
 -- ----------------------------------------------------------------------------
 do $$
 declare
-  v_overlap   int;
-  v_early     int;
-  v_overdrawn int;
-  v_late      int;
+  v_overlap    int;
+  v_early      int;
+  v_overdrawn  int;
+  v_late       int;
+  v_demo       int;
+  v_expected   int;
+  v_jordan_bad int;
+  v_jordan_ref int;
+  v_problems   text[] := '{}';
 begin
+  -- (1) Zero overlapping months: no generated row may share or follow the month
+  --     of a customer's own records.
   select count(*) into v_overlap
     from public.transactions t
    where t.is_demo
@@ -462,44 +517,169 @@ begin
                     and not r.is_demo
                     and date_trunc('month', r.occurred_on) <= date_trunc('month', t.occurred_on));
 
+  -- (2) Zero rows before either customer's opening date.
   select count(*) into v_early
     from public.transactions t
     join public.customers c on c.id = t.customer_id
    where t.is_demo and t.occurred_on < c.member_since;
 
-  -- The running total may never dip below zero: a demo ledger should not imply
-  -- an overdraft the customer could not have had.
+  -- (3) Zero overdrawn points: the running balance may never dip below zero, in
+  --     either account, at any point in the generated history.
   select count(*) into v_overdrawn
     from (
-      select t.customer_id,
-             sum(t.amount) over (partition by t.customer_id, t.account_kind
+      select sum(t.amount) over (partition by t.customer_id, t.account_kind
                                  order by t.occurred_on, t.client_ref) as running
         from public.transactions t
        where t.is_demo
     ) x
    where x.running < 0;
 
-  -- A customer whose history has been closed off must have nothing after it.
+  -- (4) Zero Alex rows after 2022-06-30. This is scoped to rows this file is
+  --     responsible for — the generated history plus anything still carrying a
+  --     seeded t1..t8 ref — so a transaction a customer creates later cannot
+  --     make a correct migration abort.
   select count(*) into v_late
     from public.transactions t
     join public.customers c on c.id = t.customer_id
-   where c.client_ref = 'demo-1' and t.occurred_on > date '2022-06-30';
+   where c.client_ref = 'demo-1'
+     and t.occurred_on > date '2022-06-30'
+     and (t.is_demo or t.id in (select id from rb_retired));
 
+  -- (5) All expected generated history was inserted. The expected count is
+  --     derived from the same window and pattern tables the generator used, so
+  --     it cannot pass by accident: a skipped, truncated or duplicated insert
+  --     all show up here. Recounted every run, so an idempotent re-run (no rows
+  --     inserted the second time) is still verified against the real total.
+  select count(*) into v_demo from public.transactions where is_demo;
+
+  select
+      -- two opening deposits per customer
+      (select count(*) from rb_window) * 2
+      -- one salary per month after the opening month
+    + (select count(*) from rb_range where after_opening)
+      -- spending: each month after opening times each in-season pattern
+    + (select count(*)
+         from rb_range r
+         join rb_tpl t
+           on (t.season is null
+               or extract(month from r.mon)::int = any (t.season))
+        where r.after_opening)
+      -- the paired savings inflow for each savings transfer. The matching
+      -- checking outflow is an ordinary slot-21 pattern row and is therefore
+      -- already counted by the spending term above.
+    + (select count(*)
+             from rb_range r
+             join rb_tpl t
+               on t.slot = 21
+              and (t.season is null
+                   or extract(month from r.mon)::int = any (t.season))
+            where r.after_opening)
+      -- one joint transfer out per month after opening
+    + (select count(*) from rb_range where after_opening)
+      -- one interest credit per quarter
+    + (select count(*) from rb_range
+        where after_opening and extract(month from mon)::int in (3, 6, 9, 12))
+    into v_expected;
+
+  if v_demo <> v_expected then
+    v_problems := v_problems || format(
+      'generated %s demonstration rows, expected %s', v_demo, v_expected);
+  end if;
+
+  -- (6) Jordan's own transactions are untouched: same three rows, same ids,
+  --     same dates, amounts and descriptions.
+  select count(*) into v_jordan_bad
+    from public.customers c
+   where c.client_ref = 'demo-2'
+     and not exists (
+       select 1 from public.transactions t
+        where t.customer_id = c.id
+          and t.client_ref = 't9'
+          and t.occurred_on = date '2026-02-02'
+          and t.amount = 1850.00
+          and t.account_kind = 'checking'
+     );
+  if v_jordan_bad > 0 then
+    v_problems := v_problems || 'demo-2 is missing its original t9 row';
+  end if;
+
+  select count(*) into v_jordan_bad
+    from public.customers c
+   where c.client_ref = 'demo-2'
+     and not exists (
+       select 1 from public.transactions t
+        where t.customer_id = c.id
+          and t.client_ref = 't10'
+          and t.occurred_on = date '2026-02-03'
+          and t.amount = -42.00
+          and t.account_kind = 'checking'
+     );
+  if v_jordan_bad > 0 then
+    v_problems := v_problems || 'demo-2 is missing its original t10 row';
+  end if;
+
+  select count(*) into v_jordan_bad
+    from public.customers c
+   where c.client_ref = 'demo-2'
+     and not exists (
+       select 1 from public.transactions t
+        where t.customer_id = c.id
+          and t.client_ref = 't11'
+          and t.occurred_on = date '2026-02-04'
+          and t.amount = -13.50
+          and t.account_kind = 'checking'
+     );
+  if v_jordan_bad > 0 then
+    v_problems := v_problems || 'demo-2 is missing its original t11 row';
+  end if;
+
+  -- Jordan still owns exactly the three rows the seed gave them, and every row
+  -- that existed before this file ran is still there, unchanged. Comparing
+  -- against the snapshot rather than a hard-coded 3 keeps the assertion true
+  -- for a re-run on a database a customer has since used.
+  select count(*) into v_jordan_ref
+    from public.transactions t
+    join public.customers c on c.id = t.customer_id
+   where c.client_ref = 'demo-2' and not t.is_demo
+     and t.client_ref in ('t9','t10','t11');
+  if v_jordan_ref <> 3 then
+    v_problems := v_problems || format('demo-2 has %s original seeded rows, expected 3', v_jordan_ref);
+  end if;
+
+  select count(*) into v_jordan_bad
+    from rb_preexisting p
+   where not exists (select 1 from public.transactions t where t.id = p.id)
+     and p.id not in (select id from rb_retired);
+  if v_jordan_bad > 0 then
+    v_problems := v_problems || format(
+      '%s pre-existing rows were removed (only the eight authorised seeded rows may go)',
+      v_jordan_bad);
+  end if;
+
+  -- Collect every failure before raising, so a single run reports all of them.
   if v_overlap > 0 then
-    raise warning 'RIVERBEND 007: % demonstration rows overlap existing record months', v_overlap;
+    v_problems := v_problems || format('%s generated rows overlap existing record months', v_overlap);
   end if;
   if v_early > 0 then
-    raise warning 'RIVERBEND 007: % demonstration rows predate the account opening', v_early;
+    v_problems := v_problems || format('%s generated rows predate the account opening', v_early);
   end if;
   if v_overdrawn > 0 then
-    raise warning 'RIVERBEND 007: % points where demonstration history dips below zero', v_overdrawn;
+    v_problems := v_problems || format('%s points where the generated balance dips below zero', v_overdrawn);
   end if;
   if v_late > 0 then
-    raise warning 'RIVERBEND 007: % demo-1 rows are dated after 2022-06-30', v_late;
+    v_problems := v_problems || format('%s demo-1 rows are dated after 2022-06-30', v_late);
+  end if;
+  if v_demo <> v_expected then
+    v_problems := v_problems || format('inserted %s generated rows, expected %s', v_demo, v_expected);
   end if;
 
-  raise notice 'RIVERBEND 007: % demonstration rows total, % overlap, % early, % overdrawn, % late',
-    (select count(*) from public.transactions where is_demo), v_overlap, v_early, v_overdrawn, v_late;
+  if array_length(v_problems, 1) is not null then
+    raise exception 'RIVERBEND 007 aborted, nothing was committed: %',
+      array_to_string(v_problems, '; ');
+  end if;
+
+  raise notice 'RIVERBEND 007 verified: % demonstration rows, 0 overlap, 0 early, 0 overdrawn, 0 late; demo-2 original rows intact',
+    v_demo;
 end;
 $$;
 
