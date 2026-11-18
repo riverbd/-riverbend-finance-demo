@@ -72,6 +72,27 @@
 --
 -- Safety: no TRUNCATE, no DROP TABLE, no UPDATE of transaction or balance data,
 -- and a single narrowly-scoped DELETE. Safe to re-run.
+--
+-- IF THIS FILE ABORTS
+--   It aborts rather than committing anything it could not verify, so a failed
+--   run leaves the database exactly as it was. Run this to see why:
+--
+--     select c.client_ref                       as customer,
+--            t.client_ref                       as ref,
+--            t.id                               as id,
+--            t.occurred_on,
+--            t.amount,
+--            t.account_kind,
+--            t.merchant,
+--            t.is_demo
+--       from public.transactions t
+--       join public.customers c on c.id = t.customer_id
+--      where c.client_ref = 'demo-1'
+--      order by t.occurred_on, t.client_ref;
+--
+--   Send its output along with the error message. Nothing needs fixing by hand:
+--   the file can be corrected and re-run, because it never applies a partial
+--   change.
 -- ============================================================================
 
 begin;
@@ -100,53 +121,246 @@ create index if not exists transactions_activity_idx
 -- Alex eight rows dated 2026-02-01 .. 2026-02-08 (client_ref t1..t8, including
 -- one interest row on fixed savings). They are removed here.
 --
--- This is deliberately narrow. Every row is named by its uuid AND its
--- client_ref, scoped to demo-1, to a February 2026 date, and to is_demo = false.
--- Nothing else can match:
---   * generated history (is_demo = true) is excluded,
---   * Jordan's t9..t11 belong to a different customer,
---   * any row the customer creates later has a null or user-supplied client_ref
---     and dates far from February 2026.
--- Once the eight rows are gone this statement matches nothing, so re-running
--- deletes nothing.
--- ----------------------------------------------------------------------------
--- The eight rows this file is authorised to remove, named by primary key. They
--- are listed once, here, so the DELETE, the "nothing else was touched" check
--- and the "no late activity" check all agree on exactly the same set.
+-- Three steps, each enforced rather than asserted:
+--   2a. identify the eight rows and prove they are the rows this file expects,
+--       aborting before any change if they are not;
+--   2b. delete exactly the verified set;
+--   2c. prove Alex has nothing left after 2022-06-30.
 --
--- Temp tables are dropped first so a second run on the same connection — which
--- is what the SQL Editor does — cannot trip over "relation already exists".
-drop table if exists rb_retired;
-create temporary table rb_retired on commit preserve rows as
-select v.id::uuid as id
+-- The deletion stays deliberately narrow: demo-1 only, an exact seeded
+-- client_ref, a February 2026 date, not generated history, and every other
+-- column equal to what the seed wrote. Generated history is excluded by
+-- is_demo, Jordan's t9..t11 belong to a different customer, and a row the
+-- customer creates later carries a null or user-supplied client_ref.
+
+-- ----------------------------------------------------------------------------
+-- 2a. Identify the eight rows, and prove they are the rows we think they are
+-- ----------------------------------------------------------------------------
+-- The eight seeded rows are identified by ALL of: Alex's customer id, the seeded
+-- client_ref (t1..t8), a February 2026 date, the account kind, the amount and
+-- the description the original seed wrote, and the seeded primary key. Every
+-- one of those is checked, and a row must match all of them to be retired.
+--
+-- This is checked rather than assumed because a mismatch has two very different
+-- causes that must not be treated the same way:
+--
+--   * the live database simply does not contain the rows this file was written
+--     for (different ids, different amounts, a different seed run, a restore);
+--   * the live database does, but something has altered them.
+--
+-- Either way the right response is to stop before changing anything and say
+-- precisely which row is wrong and how, rather than to delete whatever happened
+-- to match and carry on. A run that deletes nothing but still commits is the
+-- exact failure this step exists to prevent.
+--
+-- rb_expected describes what the seed wrote; rb_candidate holds the rows that
+-- match it on every column, and is the only thing the DELETE is allowed to
+-- touch. If the two do not line up one-for-one, the migration aborts here.
+-- ----------------------------------------------------------------------------
+drop table if exists rb_expected;
+create temporary table rb_expected on commit preserve rows as
+select v.id::uuid  as id,
+       v.client_ref,
+       v.occurred_on,
+       v.amount,
+       v.account_kind,
+       v.merchant
   from (values
-    ('30000000-0000-4000-8000-000000000001'),
-    ('30000000-0000-4000-8000-000000000002'),
-    ('30000000-0000-4000-8000-000000000003'),
-    ('30000000-0000-4000-8000-000000000004'),
-    ('30000000-0000-4000-8000-000000000005'),
-    ('30000000-0000-4000-8000-000000000006'),
-    ('30000000-0000-4000-8000-000000000007'),
-    ('30000000-0000-4000-8000-000000000008')
-  ) as v(id);
+    ('30000000-0000-4000-8000-000000000001', 't1', date '2026-02-01',  3200.00, 'checking', 'Payroll · Northwind Group'),
+    ('30000000-0000-4000-8000-000000000002', 't2', date '2026-02-02',    -4.80, 'checking', 'Coffee & Co.'),
+    ('30000000-0000-4000-8000-000000000003', 't3', date '2026-02-03',   -62.30, 'checking', 'Whole Foods'),
+    ('30000000-0000-4000-8000-000000000004', 't4', date '2026-02-04',  -500.00, 'checking', 'Transfer to savings'),
+    ('30000000-0000-4000-8000-000000000005', 't5', date '2026-02-05',   -11.99, 'checking', 'Spotify'),
+    ('30000000-0000-4000-8000-000000000006', 't6', date '2026-02-06',   -29.00, 'checking', 'Vilnius → Riga train'),
+    ('30000000-0000-4000-8000-000000000007', 't7', date '2026-02-07',    84.12, 'savings',  'Interest'),
+    ('30000000-0000-4000-8000-000000000008', 't8', date '2026-02-08',   -38.00, 'checking', 'Gym membership')
+  ) as v(id, client_ref, occurred_on, amount, account_kind, merchant);
+
+-- Every non-generated row on Alex's account that carries a seeded reference.
+-- These are the only rows under consideration; the DELETE cannot reach outside
+-- this set, and this set is what the expectations are checked against.
+drop table if exists rb_found;
+create temporary table rb_found on commit preserve rows as
+select t.id, t.client_ref, t.occurred_on, t.amount, t.account_kind, t.merchant
+  from public.transactions t
+  join public.customers c on c.id = t.customer_id
+ where c.client_ref = 'demo-1'
+   and t.is_demo = false
+   and t.client_ref in (select client_ref from rb_expected);
+
+-- The rows that match the seed exactly, on every column including the id. This
+-- is precisely what the DELETE will remove.
+drop table if exists rb_candidate;
+create temporary table rb_candidate on commit preserve rows as
+select f.id, f.client_ref
+  from rb_found f
+  join rb_expected e
+    on e.id           = f.id
+   and e.client_ref   = f.client_ref
+   and e.occurred_on  = f.occurred_on
+   and e.amount       = f.amount
+   and e.account_kind = f.account_kind
+   and e.merchant     = f.merchant;
 
 -- Record every row that already exists, before this file changes anything.
--- The verification gate uses it to prove the two things that matter about
--- pre-existing data: no such row was removed, and no such row was invented.
+-- The verification gate uses it to prove that no row was removed and none was
+-- invented.
 drop table if exists rb_preexisting;
 create temporary table rb_preexisting on commit preserve rows as
 select t.id, t.customer_id, t.client_ref, t.account_kind, t.occurred_on, t.amount
   from public.transactions t;
 
+do $$
+declare
+  v_detail   text;
+  v_total    int;
+  v_feb      int;
+  v_problems text[] := '{}';
+begin
+  -- A re-run on a database that already has the generated history is not a
+  -- failure: an earlier run retired these eight rows and verified the result.
+  -- Nothing is left to identify or delete, so this step is skipped rather than
+  -- demanded — re-running must delete nothing and must not error. Step 2c still
+  -- runs unconditionally, so Alex having nothing after 2022-06-30 is proven
+  -- again on every run.
+  if exists (select 1 from public.transactions where is_demo) then
+    raise notice 'RIVERBEND 007: seeded rows already retired, nothing to delete';
+    return;
+  end if;
+
+  -- (1) The exact expected set must be present. This is the check that catches
+  --     "the live rows are not the rows this file was written for".
+  select string_agg(e.client_ref, ', ' order by e.client_ref) into v_detail
+    from rb_expected e
+   where not exists (select 1 from rb_candidate k where k.id = e.id);
+  if v_detail is not null then
+    v_problems := v_problems || format(
+      'seeded rows not found exactly as expected: %s', v_detail);
+  end if;
+
+  -- (2) For anything still unmatched, say how it differs. A row carrying the
+  --     right client_ref but a different id is a different row; a row carrying
+  --     the right id but a different amount has been altered. Both stop the
+  --     migration, but the distinction is what makes the abort actionable.
+  select string_agg(
+           format('%s (%s)', f.client_ref,
+                  case
+                    when f.id <> e.id then 'id differs'
+                    when f.occurred_on <> e.occurred_on then 'date differs'
+                    when f.amount <> e.amount then 'amount differs'
+                    when f.account_kind <> e.account_kind then 'account kind differs'
+                    else 'description differs'
+                  end),
+           '; ' order by f.client_ref)
+    into v_detail
+    from rb_found f
+    join rb_expected e on e.client_ref = f.client_ref
+   where not exists (select 1 from rb_candidate k where k.id = f.id);
+  if v_detail is not null then
+    v_problems := v_problems || format('rows differ from the seed as follows: %s', v_detail);
+  end if;
+
+  -- (3) A seeded reference must appear at most once. Two matches would mean the
+  --     delete is ambiguous.
+  select string_agg(client_ref, ', ' order by client_ref) into v_detail
+    from (select client_ref from rb_found group by client_ref having count(*) > 1) d;
+  if v_detail is not null then
+    v_problems := v_problems || format('more than one row matches each of: %s', v_detail);
+  end if;
+
+  -- (4) Alex's February 2026 rows must be exactly the eight. Anything else there
+  --     is activity this file has no instruction for.
+  select count(*) into v_feb
+    from public.transactions t
+    join public.customers c on c.id = t.customer_id
+   where c.client_ref = 'demo-1'
+     and t.is_demo = false
+     and t.occurred_on >= date '2026-02-01'
+     and t.occurred_on <  date '2026-03-01';
+  if v_feb <> 8 then
+    v_problems := v_problems || format(
+      'demo-1 has %s non-generated row(s) in February 2026, expected 8', v_feb);
+  end if;
+
+  -- (5) The eight must be all that is left of Alex after 2022-06-30. Anything
+  --     else dated later means Alex's history is not what this file assumes.
+  select count(*) into v_total
+    from public.transactions t
+    join public.customers c on c.id = t.customer_id
+   where c.client_ref = 'demo-1'
+     and t.is_demo = false
+     and t.occurred_on > date '2022-06-30'
+     and not exists (select 1 from rb_candidate k where k.id = t.id);
+  if v_total > 0 then
+    v_problems := v_problems || format(
+      '%s unexpected transaction(s) on demo-1 are dated after 2022-06-30', v_total);
+  end if;
+
+  -- A database with nothing left to retire is not a failure. If none of the
+  -- eight are present AND Alex has no non-generated activity at all after
+  -- 2022-06-30, there is demonstrably nothing here to delete, so step 2b is
+  -- skipped and step 2c proves the result. This is what makes a re-run after
+  -- the generated history has been cleared safe instead of an error.
+  --
+  -- The distinction matters: rows that are genuinely absent are quite different
+  -- from rows that are present but wrong. The latter is a mismatch, reported
+  -- below, and must stop the migration.
+  if array_length(v_problems, 1) is not null then
+    select count(*) into v_total
+      from public.transactions t
+      join public.customers c on c.id = t.customer_id
+     where c.client_ref = 'demo-1'
+       and t.is_demo = false
+       and t.occurred_on > date '2022-06-30';
+
+    if v_total = 0 then
+      raise notice 'RIVERBEND 007: no seeded rows to retire, nothing to delete';
+      return;
+    end if;
+
+    raise exception
+      'RIVERBEND 007 aborted before deleting anything: %', array_to_string(v_problems, '; ');
+  end if;
+
+  raise notice 'RIVERBEND 007: all 8 seeded rows identified and verified';
+end;
+$$;
+
+-- ----------------------------------------------------------------------------
+-- 2b. Retire them
+-- ----------------------------------------------------------------------------
+-- Same narrow predicates as rb_candidate, plus the id: this deletes exactly the
+-- rows just verified, no more. It cannot widen, because it selects from the
+-- verified set rather than re-deriving one.
 delete from public.transactions t
- using public.customers c
- where t.customer_id = c.id
-   and c.client_ref = 'demo-1'
-   and t.is_demo = false
-   and t.client_ref in ('t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8')
-   and t.id in (select id from rb_retired)
-   and t.occurred_on >= date '2026-02-01'
-   and t.occurred_on <  date '2026-03-01';
+ using rb_candidate k
+ where t.id = k.id;
+
+-- ----------------------------------------------------------------------------
+-- 2c. Prove the retirement was total
+-- ----------------------------------------------------------------------------
+-- Independent of the checks above: whatever identification happened to do,
+-- Alex must have nothing left after 2022-06-30. This is the assertion that
+-- makes a mis-identified deletion impossible to commit — including the failure
+-- mode of the previous revision, where a different uuid meant the DELETE
+-- matched nothing and the gate still passed.
+do $$
+declare
+  v_late int;
+begin
+  select count(*) into v_late
+    from public.transactions t
+    join public.customers c on c.id = t.customer_id
+   where c.client_ref = 'demo-1'
+     and t.occurred_on > date '2022-06-30';
+
+  if v_late > 0 then
+    raise exception
+      'RIVERBEND 007 aborted, nothing was committed: demo-1 still has % transaction(s) dated after 2022-06-30',
+      v_late;
+  end if;
+end;
+$$;
 
 -- ----------------------------------------------------------------------------
 -- 3. Generate the history
@@ -534,16 +748,17 @@ begin
     ) x
    where x.running < 0;
 
-  -- (4) Zero Alex rows after 2022-06-30. This is scoped to rows this file is
-  --     responsible for — the generated history plus anything still carrying a
-  --     seeded t1..t8 ref — so a transaction a customer creates later cannot
-  --     make a correct migration abort.
+  -- (4) Zero Alex rows after 2022-06-30 — ALL of them, with no exception for
+  --     rows this file did not generate. Step 2c checks this immediately after
+  --     the DELETE; this checks it again from inside the final gate, so neither
+  --     check can pass while the other is wrong. Scoping this to "rows we are
+  --     responsible for" (a previous revision) is exactly what let a run commit
+  --     with Alex still holding late activity.
   select count(*) into v_late
     from public.transactions t
     join public.customers c on c.id = t.customer_id
    where c.client_ref = 'demo-1'
-     and t.occurred_on > date '2022-06-30'
-     and (t.is_demo or t.id in (select id from rb_retired));
+     and t.occurred_on > date '2022-06-30';
 
   -- (5) All expected generated history was inserted. The expected count is
   --     derived from the same window and pattern tables the generator used, so
@@ -644,10 +859,10 @@ begin
   select count(*) into v_jordan_bad
     from rb_preexisting p
    where not exists (select 1 from public.transactions t where t.id = p.id)
-     and p.id not in (select id from rb_retired);
+     and p.id not in (select id from rb_candidate);
   if v_jordan_bad > 0 then
     v_problems := v_problems || format(
-      '%s pre-existing rows were removed (only the eight authorised seeded rows may go)',
+      '%s pre-existing rows were removed (only the eight verified seeded rows may go)',
       v_jordan_bad);
   end if;
 
