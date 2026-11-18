@@ -85,7 +85,6 @@ export type ContentState = {
       closingBalance: string;
       download: string;
       generating: string;
-      disclosure: string;
     };
     cards: {
       heading: string;
@@ -282,7 +281,6 @@ export const defaultContent: ContentState = {
       closingBalance: "Closing balance",
       download: "Download PDF statement",
       generating: "Preparing…",
-      disclosure: "Demo Statement",
     },
     cards: {
       heading: "Cards",

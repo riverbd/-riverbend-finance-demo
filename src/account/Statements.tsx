@@ -227,7 +227,6 @@ export default function Statements({ onBack }: { onBack: () => void }) {
       >
         {busy ? s.generating : s.download}
       </button>
-      <p className="px-1 text-[11px] leading-relaxed text-slate-400">{s.disclosure}</p>
     </div>
   );
 }

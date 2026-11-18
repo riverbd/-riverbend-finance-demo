@@ -26,8 +26,6 @@ const EMERALD_600 = [5, 150, 105] as const;
 
 const MARGIN = 14;
 
-export const DISCLOSURE = "Demo Statement";
-
 /**
  * Make a string safe for the PDF's built-in Helvetica, which uses WinAnsi
  * encoding and silently drops or mangles anything outside it.
@@ -264,7 +262,6 @@ export function renderStatementPdf(data: StatementData): jsPDF {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7);
     doc.setTextColor(...SLATE_500);
-    doc.text(pdfSafe(DISCLOSURE), MARGIN, fy);
     doc.text(`Page ${p} of ${pages}`, right, fy, { align: "right" });
   }
 
