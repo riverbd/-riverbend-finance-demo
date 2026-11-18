@@ -424,15 +424,7 @@ export function useAuth() {
  * Formatting helpers (unchanged)
  * ========================================================================== */
 
-export function formatMoney(n: number) {
-  return n.toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-  });
-}
-
-export function formatDate(iso: string) {
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
+// Re-exported from ./format so existing imports keep working. The definitions
+// live in a dependency-free module because the statement PDF needs them and
+// must not pull the Supabase client into its bundle.
+export { formatMoney, formatDate, formatDateWithYear } from "./format";

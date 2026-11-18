@@ -70,6 +70,23 @@ export type ContentState = {
       allActivityFilterLabel: string;
       seeAllBack: string;
     };
+    statements: {
+      heading: string;
+      sub: string;
+      back: string;
+      startLabel: string;
+      endLabel: string;
+      fullHistory: string;
+      last90: string;
+      invalidPeriod: string;
+      openingBalance: string;
+      totalReceived: string;
+      totalSpent: string;
+      closingBalance: string;
+      download: string;
+      generating: string;
+      disclosure: string;
+    };
     cards: {
       heading: string;
       sub: string;
@@ -250,6 +267,23 @@ export const defaultContent: ContentState = {
       seeAllBack: "Back to accounts",
       earliestLabel: "Earliest",
     },
+    statements: {
+      heading: "Download a statement",
+      sub: "Choose an account and a period, then download a PDF.",
+      back: "Back to accounts",
+      startLabel: "From",
+      endLabel: "To",
+      fullHistory: "Full history",
+      last90: "Last 90 days",
+      invalidPeriod: "Choose a start date on or before the end date.",
+      openingBalance: "Opening balance",
+      totalReceived: "Money received",
+      totalSpent: "Money spent",
+      closingBalance: "Closing balance",
+      download: "Download PDF statement",
+      generating: "Preparing…",
+      disclosure: "Illustrative demonstration statement. Not a real financial record.",
+    },
     cards: {
       heading: "Cards",
       sub: "Manage your debit and credit cards. Freeze anytime if misplaced.",
@@ -369,6 +403,7 @@ function mergeWithDefaults(parsed: Partial<ContentState>): ContentState {
       ...(parsed.account ?? {}),
       dashboard: { ...defaultContent.account.dashboard, ...(parsed.account?.dashboard ?? {}) },
       accounts: { ...defaultContent.account.accounts, ...(parsed.account?.accounts ?? {}) },
+      statements: { ...defaultContent.account.statements, ...(parsed.account?.statements ?? {}) },
       cards: { ...defaultContent.account.cards, ...(parsed.account?.cards ?? {}) },
       profile: { ...defaultContent.account.profile, ...(parsed.account?.profile ?? {}) },
       send: { ...defaultContent.account.send, ...(parsed.account?.send ?? {}) },

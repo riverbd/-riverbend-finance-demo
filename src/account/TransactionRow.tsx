@@ -1,4 +1,4 @@
-import { formatDate, formatMoney } from "./auth";
+import { formatDateWithYear, formatMoney } from "./format";
 import type { AccountKind, Transaction } from "./types";
 
 /**
@@ -50,7 +50,7 @@ export function TransactionRow({
           <p className="flex flex-wrap items-center gap-x-1 text-[11px] text-slate-500">
             <span>{t.category}</span>
             <span aria-hidden="true">·</span>
-            <span>{formatDate(t.date)}</span>
+            <span>{formatDateWithYear(t.date)}</span>
             {showAccount && (
               <>
                 <span aria-hidden="true">·</span>

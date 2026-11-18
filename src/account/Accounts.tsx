@@ -3,6 +3,7 @@ import { useAuth, formatMoney } from "./auth";
 import { useContent } from "../admin/store";
 import CheckingActivity from "./CheckingActivity";
 import AllActivity from "./AllActivity";
+import Statements from "./Statements";
 
 export default function Accounts() {
   const { user } = useAuth();
@@ -13,7 +14,12 @@ export default function Accounts() {
   // The full ledger is a dedicated view, not a mode of the account cards, so
   // "See All" swaps the whole page body rather than expanding the list.
   const [showAllActivity, setShowAllActivity] = useState(false);
+  const [showStatements, setShowStatements] = useState(false);
   if (!user) return null;
+
+  if (showStatements) {
+    return <Statements onBack={() => setShowStatements(false)} />;
+  }
 
   if (showAllActivity) {
     return (
@@ -32,9 +38,24 @@ export default function Accounts() {
 
   return (
     <div className="space-y-5">
-      <header>
-        <h2 className="text-lg font-semibold text-slate-900">{a.heading}</h2>
-        <p className="text-sm text-slate-500">{a.sub}</p>
+      <header className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900">{a.heading}</h2>
+          <p className="text-sm text-slate-500">{a.sub}</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowStatements(true)}
+          data-testid="open-statements"
+          className="inline-flex shrink-0 items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-river-700 hover:bg-river-50"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}
+            strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <path d="M14 2v6h6M12 18v-6M9 15l3 3 3-3" />
+          </svg>
+          Statements
+        </button>
       </header>
 
       <div className="grid grid-cols-2 gap-3">
