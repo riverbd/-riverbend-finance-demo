@@ -122,6 +122,10 @@ function AccountGate({ active }: { active: PageId }): ReactNode {
   const [dashPage, setDashPage] = useState<DashPage>(
     (active as DashPage) ?? "dashboard"
   );
+  // Which view Accounts should open on. "See All" from the homepage Recent
+  // Activity lands straight on the full ledger rather than on the account
+  // cards, so the customer does not have to click a second See All.
+  const [accountsView, setAccountsView] = useState<"list" | "all-activity">("list");
 
   useEffect(() => {
     if (
@@ -169,7 +173,8 @@ function AccountGate({ active }: { active: PageId }): ReactNode {
     );
   }
 
-  const go = (p: DashPage) => {
+  const go = (p: DashPage, view: "list" | "all-activity" = "list") => {
+    setAccountsView(view);
     setDashPage(p);
     window.location.hash = p;
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -185,8 +190,16 @@ function AccountGate({ active }: { active: PageId }): ReactNode {
 
   return (
     <AccountShell active={dashPage} onNavigate={go} onSignOut={handleSignOut}>
-      {dashPage === "dashboard" && <Dashboard onGoTo={go} />}
-      {dashPage === "accounts" && <Accounts />}
+      {dashPage === "dashboard" && <Dashboard
+        onGoTo={(p) => go(p)}
+        onSeeAllActivity={() => go("accounts", "all-activity")}
+      />}
+      {/* The key remounts Accounts per view request, so clicking Accounts in the
+          nav after a See All returns to the cards instead of staying on the
+          ledger. */}
+      {dashPage === "accounts" && (
+        <Accounts key={accountsView} initialView={accountsView} />
+      )}
       {dashPage === "cards" && <Cards />}
       {dashPage === "profile" && <Profile />}
       {dashPage === "send" && <SendPage />}

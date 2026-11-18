@@ -620,3 +620,41 @@ export async function deleteAdminTransaction(
     );
   }
 }
+
+/**
+ * Correct one transaction's date and/or amount.
+ *
+ * Goes through `riverbend_admin_edit_transaction` (migration 009), which moves
+ * the owning account's balance by the difference between the old and the new
+ * amount in the same transaction as the row update. None of that is done here:
+ * a client that adjusted the balance itself could apply the difference twice
+ * on a retry, or leave the two out of step if the second call failed.
+ *
+ * `expectedAmount` is the amount the panel believes the row currently holds. If
+ * the row no longer matches, the function refuses the edit rather than applying
+ * a difference that has already been applied — which is what makes a retried
+ * request harmless.
+ */
+export async function editAdminTransaction(
+  passphrase: string,
+  id: string,
+  expectedAmount: number,
+  newAmount: number,
+  newDate: string
+): Promise<void> {
+  const { data, error } = await supabase.rpc("riverbend_admin_edit_transaction", {
+    p_passphrase: passphrase,
+    p_id: id,
+    p_expected_amount: expectedAmount,
+    p_new_amount: newAmount,
+    p_new_date: newDate,
+  });
+
+  if (error) throw adminError(error, "Saving the transaction");
+
+  if (Number(data ?? 0) === 0) {
+    throw new DatabaseError(
+      "Saving the transaction failed: it may have been deleted, or the admin passphrase was rejected."
+    );
+  }
+}

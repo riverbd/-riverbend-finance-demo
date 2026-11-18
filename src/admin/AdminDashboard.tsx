@@ -20,7 +20,7 @@ import {
   setContactMessageRead,
 } from "./db";
 import type { ContactMessage } from "./db";
-import { deleteAdminTransaction, fetchAdminTransactions } from "./db";
+import { deleteAdminTransaction, editAdminTransaction, fetchAdminTransactions } from "./db";
 import type { AdminTransaction, AdminCustomer, AdminVerification } from "./db";
 
 type Tab =
@@ -65,6 +65,40 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "messages", label: "Messages" },
   { id: "data", label: "Data" },
 ];
+
+/**
+ * An ISO date (`2026-11-16`) as the MM/DD/YY the edit form shows.
+ *
+ * Parsed by hand rather than through `Date`, which would shift the day across a
+ * timezone boundary for anyone west of UTC.
+ */
+export function toUsDate(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return "";
+  return `${m[2]}/${m[3]}/${m[1].slice(2)}`;
+}
+
+/** MM/DD/YY (or MM/DD/YYYY) back to ISO, or null when it is not a real date. */
+export function fromUsDate(us: string): string | null {
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/.exec(us.trim());
+  if (!m) return null;
+  const month = Number(m[1]);
+  const day = Number(m[2]);
+  const year = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  // Reject 02/30 and friends: the constructed date must round-trip.
+  const d = new Date(Date.UTC(year, month - 1, day));
+  if (d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) return null;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/** Lets the administrator type digits and slashes without fighting the field. */
+export function formatUsDateInput(raw: string): string {
+  const digits = raw.replace(/[^\d]/g, "").slice(0, 8);
+  if (digits.length <= 2) return digits;
+  if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+}
 
 /**
  * Loads the customer table from Supabase for the admin data tabs.
@@ -1453,6 +1487,12 @@ function TransactionsTab() {
   const [busy, setBusy] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [filter, setFilter] = useState<CustomerFilter>("all");
+  // The row being edited, and the values in its form. Held as strings so the
+  // date and amount fields behave like inputs rather than reformatting under
+  // the administrator's fingers.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draftDate, setDraftDate] = useState("");
+  const [draftAmount, setDraftAmount] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -1469,6 +1509,61 @@ function TransactionsTab() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * Open the editor for a row.
+   *
+   * The amount field is prefilled with its magnitude and the label says whether
+   * this is money in or money out. The stored sign is kept on save, so editing
+   * the number can never quietly turn a payment into a refund.
+   */
+  const beginEdit = (t: AdminTransaction) => {
+    setEditing(t.id);
+    setConfirming(null);
+    setError(null);
+    setNotice(null);
+    setDraftDate(toUsDate(t.occurredOn));
+    setDraftAmount(Math.abs(t.amount).toFixed(2));
+  };
+
+  const cancelEdit = () => {
+    setEditing(null);
+    setDraftDate("");
+    setDraftAmount("");
+  };
+
+  const saveEdit = async (t: AdminTransaction) => {
+    const magnitude = Number.parseFloat(draftAmount);
+    if (!Number.isFinite(magnitude) || magnitude <= 0) {
+      setError("Enter an amount greater than zero.");
+      return;
+    }
+    const isoDate = fromUsDate(draftDate);
+    if (!isoDate) {
+      setError("Enter the date as MM/DD/YY.");
+      return;
+    }
+    // Preserve the direction the transaction already had: this corrects an
+    // existing row, it does not reverse it.
+    const signed = t.amount < 0 ? -magnitude : magnitude;
+
+    setBusy(t.id);
+    setError(null);
+    setNotice(null);
+    try {
+      await editAdminTransaction(ADMIN_PASSWORD, t.id, t.amount, signed, isoDate);
+      cancelEdit();
+      await load();
+      setNotice(
+        `Updated “${t.merchant}” to ${formatMoney(signed)} on ${draftDate}. ` +
+          `The account balance moved by ${formatMoney(signed - t.amount)}.`
+      );
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not save the transaction.");
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const remove = async (t: AdminTransaction) => {
     setBusy(t.id);
@@ -1601,15 +1696,105 @@ function TransactionsTab() {
                     </button>
                   </>
                 ) : (
-                  <button
-                    onClick={() => setConfirming(t.id)}
-                    className="rounded-xl border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50"
-                  >
-                    Delete
-                  </button>
+                  <>
+                    <button
+                      onClick={() => beginEdit(t)}
+                      data-testid={`edit-${t.id}`}
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => setConfirming(t.id)}
+                      className="rounded-xl border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                    >
+                      Delete
+                    </button>
+                  </>
                 )}
               </div>
             </div>
+
+            {/* ---- inline editor ------------------------------------------
+                Only the two editable fields appear. Description, type and
+                account are shown as text, because this corrects a row rather
+                than replacing it. */}
+            {editing === t.id && (
+              <div
+                className="mt-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3"
+                data-testid={`editor-${t.id}`}
+              >
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-slate-500">
+                      Transaction date
+                    </span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="MM/DD/YY"
+                      aria-label="Transaction date"
+                      value={draftDate}
+                      onChange={(e) => setDraftDate(formatUsDateInput(e.target.value))}
+                      data-testid="edit-date"
+                      className="w-full rounded-xl border border-slate-200 bg-white px-2 py-2 text-sm text-slate-900 tabular-nums"
+                    />
+                    <span className="mt-1 block text-[10px] text-slate-400">
+                      {draftDate.length === 8 ? "MM/DD/YY" : "Use MM/DD/YY, e.g. 11/16/26"}
+                    </span>
+                  </label>
+
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium text-slate-500">
+                      Amount ({t.amount < 0 ? "money sent" : "money received"})
+                    </span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      inputMode="decimal"
+                      aria-label="Amount"
+                      value={draftAmount}
+                      onChange={(e) => setDraftAmount(e.target.value)}
+                      data-testid="edit-amount"
+                      className="w-full rounded-xl border border-slate-200 bg-white px-2 py-2 text-sm text-slate-900"
+                    />
+                    <span className="mt-1 block text-[10px] text-slate-400">
+                      {(() => {
+                        const m = Number.parseFloat(draftAmount);
+                        if (!Number.isFinite(m) || m <= 0) return "Enter an amount above zero.";
+                        const signed = t.amount < 0 ? -m : m;
+                        const delta = signed - t.amount;
+                        if (Math.abs(delta) < 0.005) return "No change to the balance.";
+                        return `Balance ${delta > 0 ? "up" : "down"} ${formatMoney(Math.abs(delta))}`;
+                      })()}
+                    </span>
+                  </label>
+                </div>
+
+                <p className="mt-2 text-[11px] text-slate-500">
+                  Description and type are kept: <span className="font-medium">{t.merchant}</span> ·{" "}
+                  {t.category}
+                </p>
+
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    onClick={() => void saveEdit(t)}
+                    disabled={busy === t.id}
+                    data-testid="save-edit"
+                    className="rounded-xl bg-river-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-river-800 disabled:opacity-60"
+                  >
+                    {busy === t.id ? "Saving…" : "Save changes"}
+                  </button>
+                  <button
+                    onClick={cancelEdit}
+                    className="rounded-xl px-2 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-700"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
           </article>
         ))}
       </div>

@@ -10,7 +10,14 @@ import {
 
 type GoTarget = "accounts" | "cards" | "profile" | "send" | "move";
 
-export default function Dashboard({ onGoTo }: { onGoTo: (p: GoTarget) => void }) {
+export default function Dashboard({
+  onGoTo,
+  onSeeAllActivity,
+}: {
+  onGoTo: (p: GoTarget) => void;
+  /** Jump straight to the full ledger, skipping the account cards. */
+  onSeeAllActivity: () => void;
+}) {
   const { user } = useAuth();
   const { content, version } = useContent(); // version re-renders on save
   void version;
@@ -126,7 +133,8 @@ export default function Dashboard({ onGoTo }: { onGoTo: (p: GoTarget) => void })
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold text-slate-900">{dash.recentHeading}</h3>
           <button
-            onClick={() => onGoTo("accounts")}
+            onClick={onSeeAllActivity}
+            data-testid="home-see-all"
             className="text-xs font-medium text-river-700 hover:text-river-800"
           >
             {dash.recentSeeAll}

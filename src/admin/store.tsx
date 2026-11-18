@@ -282,7 +282,7 @@ export const defaultContent: ContentState = {
       closingBalance: "Closing balance",
       download: "Download PDF statement",
       generating: "Preparing…",
-      disclosure: "Illustrative demonstration statement. Not a real financial record.",
+      disclosure: "Demo Statement",
     },
     cards: {
       heading: "Cards",

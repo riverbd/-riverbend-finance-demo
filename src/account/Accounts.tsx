@@ -5,7 +5,7 @@ import CheckingActivity from "./CheckingActivity";
 import AllActivity from "./AllActivity";
 import Statements from "./Statements";
 
-export default function Accounts() {
+export default function Accounts({ initialView = "list" }: { initialView?: "list" | "all-activity" }) {
   const { user } = useAuth();
   const { content, version } = useContent(); // version re-renders on save
   void version;
@@ -13,7 +13,7 @@ export default function Accounts() {
   const [tab, setTab] = useState<"checking" | "savings">("checking");
   // The full ledger is a dedicated view, not a mode of the account cards, so
   // "See All" swaps the whole page body rather than expanding the list.
-  const [showAllActivity, setShowAllActivity] = useState(false);
+  const [showAllActivity, setShowAllActivity] = useState(initialView === "all-activity");
   const [showStatements, setShowStatements] = useState(false);
   if (!user) return null;
 

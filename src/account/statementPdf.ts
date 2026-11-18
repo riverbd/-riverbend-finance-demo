@@ -26,7 +26,7 @@ const EMERALD_600 = [5, 150, 105] as const;
 
 const MARGIN = 14;
 
-export const DISCLOSURE = "Illustrative demonstration statement";
+export const DISCLOSURE = "Demo Statement";
 
 /**
  * Make a string safe for the PDF's built-in Helvetica, which uses WinAnsi
@@ -265,14 +265,6 @@ export function renderStatementPdf(data: StatementData): jsPDF {
     doc.setFontSize(7);
     doc.setTextColor(...SLATE_500);
     doc.text(pdfSafe(DISCLOSURE), MARGIN, fy);
-    doc.text(
-      pdfSafe(
-        `${data.customerName} · ${data.accountLabel} · ${pdfDate(data.period.start)} - ${pdfDate(data.period.end)}`
-      ),
-      MARGIN,
-      fy + 3.6,
-      { maxWidth: right - MARGIN - 30 }
-    );
     doc.text(`Page ${p} of ${pages}`, right, fy, { align: "right" });
   }
 
