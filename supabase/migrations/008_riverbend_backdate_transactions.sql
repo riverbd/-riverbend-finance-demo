@@ -47,9 +47,24 @@
 --   was. Nothing is committed on a partial or unexpected result.
 --
 -- IDEMPOTENCE
---   If no demo-1 row is dated after 2022-06-30, this file has already been
---   applied: it reports that and skips the update, leaving the dates untouched.
---   Re-running therefore cannot re-space or shift the history.
+--   A rerun is a safe no-op, but it is not a blind one. "No demo-1 row dated
+--   after 2022-06-30" is only the signature of a completed run; on its own it
+--   would also be satisfied by a ledger whose rows had been deleted or whose
+--   dates had been shuffled by hand. So that test selects a branch, and the
+--   already-applied branch must then PROVE the database is in the state this
+--   migration leaves behind before it is allowed to do nothing:
+--
+--     * exactly 19 demo-1 transactions still exist;
+--     * every date lies inside 2019-04-19 .. 2022-06-30;
+--     * the first is 2019-04-19 and the last is 2022-06-30;
+--     * all 19 dates are distinct, hence chronologically ordered;
+--     * row for row, the dates equal what this migration produces.
+--
+--   The last check is exact, not probabilistic. The formula below is
+--   deterministic and the 19 dates are distinct and increasing, so a correctly
+--   backdated ledger recomputes to precisely its own dates and matches on every
+--   slot. Any deviation aborts. Re-running therefore cannot re-space, shift or
+--   silently bless a history that 008 did not create.
 --
 -- IF THIS FILE ABORTS
 --   It aborts rather than committing anything it could not verify, so a failed
@@ -138,10 +153,19 @@ declare
   v_distinct int;
   v_first    date;
   v_last     date;
+  v_mismatch int;
   v_problems text[] := '{}';
 begin
-  -- Already applied? Then there is nothing dated after the cut-off and the
-  -- history is already correct. Skip rather than re-space it.
+  -- --------------------------------------------------------------------------
+  -- A3a. Which state is this database in?
+  -- --------------------------------------------------------------------------
+  -- 008 moves every demo-1 row out of the future and into 2019-2022, so "no
+  -- demo-1 row dated after 2022-06-30" is the signature of an already-applied
+  -- database. It is not, by itself, proof of one: a ledger whose rows had been
+  -- deleted, or whose dates had been shuffled by hand, would satisfy that test
+  -- too, and would then be silently accepted as "done". So this test only
+  -- chooses which branch to run. The already-applied branch then has to prove
+  -- the ledger is exactly what 008 produces before it is allowed to no-op.
   select count(*) into v_late
     from public.transactions t
     join public.customers c on c.id = t.customer_id
@@ -149,11 +173,87 @@ begin
      and t.occurred_on > date '2022-06-30';
 
   if v_late = 0 then
+    -- ------------------------------------------------------------------------
+    -- A3b. Already-applied branch: verified, never assumed
+    -- ------------------------------------------------------------------------
+    -- The comparison below is exact rather than probabilistic. A2 has just
+    -- recomputed, from the rows as they stand, the date each slot would be
+    -- given. Because the formula is deterministic and the 19 dates are distinct
+    -- and increasing, an already-backdated ledger recomputes to precisely its
+    -- own dates — so a clean rerun matches on every slot. Any deviation means
+    -- the database is not in the state 008 leaves behind, and it aborts.
+    select count(*) into v_n from rb_target;
+    if v_n <> 19 then
+      v_problems := v_problems || format(
+        'demo-1 has %s transaction(s), expected 19', v_n);
+    end if;
+
+    -- 1. Every demo-1 date must sit inside the agreed window.
+    select count(*) into v_bad
+      from public.transactions t
+      join public.customers c on c.id = t.customer_id
+     where c.client_ref = 'demo-1'
+       and (t.occurred_on < date '2019-04-19' or t.occurred_on > date '2022-06-30');
+    if v_bad > 0 then
+      v_problems := v_problems || format(
+        '%s demo-1 row(s) are outside 2019-04-19 .. 2022-06-30', v_bad);
+    end if;
+
+    -- 2. The dates must be distinct, so every row stays identifiable.
+    select count(distinct t.occurred_on) into v_distinct
+      from public.transactions t
+      join public.customers c on c.id = t.customer_id
+     where c.client_ref = 'demo-1';
+    if v_distinct <> v_n then
+      v_problems := v_problems || format(
+        'only %s distinct date(s) across %s demo-1 row(s)', v_distinct, v_n);
+    end if;
+
+    -- 3. The boundaries must be exactly right.
+    select min(t.occurred_on), max(t.occurred_on) into v_first, v_last
+      from public.transactions t
+      join public.customers c on c.id = t.customer_id
+     where c.client_ref = 'demo-1';
+    if v_first is distinct from date '2019-04-19' then
+      v_problems := v_problems || format('first date is %s, expected 2019-04-19', v_first);
+    end if;
+    if v_last is distinct from date '2022-06-30' then
+      v_problems := v_problems || format('last date is %s, expected 2022-06-30', v_last);
+    end if;
+
+    -- 4. Row for row, the ledger must equal what this migration produces —
+    --    which is simultaneously the "chronologically ordered" test, because
+    --    the expected schedule is strictly increasing in the slot order.
+    select count(*) into v_mismatch
+      from (select t.occurred_on as actual,
+                   row_number() over (order by t.occurred_on, t.created_at, t.id) as slot
+              from public.transactions t
+              join public.customers c on c.id = t.customer_id
+             where c.client_ref = 'demo-1') x
+      join rb_newdate n on n.slot = x.slot
+     where x.actual is distinct from n.new_date;
+    if v_mismatch > 0 then
+      v_problems := v_problems || format(
+        '%s demo-1 row(s) do not match the dates this migration produces — the history was altered after 008 ran',
+        v_mismatch);
+    end if;
+
+    if array_length(v_problems, 1) is not null then
+      raise exception
+        'RIVERBEND 008 aborted before changing anything: no demo-1 row is dated after 2022-06-30, but the ledger is NOT the one this migration leaves behind. %',
+        array_to_string(v_problems, '; ');
+    end if;
+
     perform set_config('riverbend008.applied', 'true', true);
-    raise notice 'RIVERBEND 008: demo-1 history already inside the window, nothing to re-date';
+    raise notice
+      'RIVERBEND 008: already applied and verified — % demo-1 rows, % .. %, distinct and in order. Nothing to re-date.',
+      v_n, v_first, v_last;
     return;
   end if;
 
+  -- --------------------------------------------------------------------------
+  -- A3c. Fresh branch: checks on the plan, before anything is written
+  -- --------------------------------------------------------------------------
   select count(*) into v_n from rb_target;
   if v_n <> 19 then
     v_problems := v_problems || format('demo-1 has %s transaction(s), expected 19', v_n);
