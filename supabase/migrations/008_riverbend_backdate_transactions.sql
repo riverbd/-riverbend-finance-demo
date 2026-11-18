@@ -1,7 +1,7 @@
 -- ============================================================================
 -- RIVERBEND FINANCE — 008 backdate demo-1's activity and enable admin deletion
 -- ============================================================================
--- Purpose: demo-1's ledger holds 19 transactions dated in 2026. This migration
+-- Purpose: demo-1's ledger holds 20 transactions dated in 2026. This migration
 -- re-dates them into the account's actual history window — 2019-04-19 to
 -- 2022-06-30 — so the demo shows several years of activity instead of a few
 -- days. It adds nothing, deletes nothing and changes no amount.
@@ -34,7 +34,7 @@
 --   member_id, which are presentation fields an administrator may edit.
 --
 -- HOW THE DATES ARE ASSIGNED
---   The 19 rows are ordered by their existing occurred_on, then created_at,
+--   The 20 rows are ordered by their existing occurred_on, then created_at,
 --   then id — a total order, so the assignment is deterministic and keeps the
 --   ledger's original sequence. Slot i of n gets
 --
@@ -42,7 +42,7 @@
 --
 --   where 1168 is the number of days between 2019-04-19 and 2022-06-30. That
 --   puts the first row on 2019-04-19, the last on 2022-06-30, and spreads the
---   rest evenly (about 64 days apart). All 19 dates are distinct, so each row
+--   rest evenly (about 61 days apart). All 20 dates are distinct, so each row
 --   remains individually identifiable.
 --
 -- VERIFICATION
@@ -58,14 +58,14 @@
 --   already-applied branch must then PROVE the database is in the state this
 --   migration leaves behind before it is allowed to do nothing:
 --
---     * exactly 19 demo-1 transactions still exist;
+--     * exactly 20 demo-1 transactions still exist;
 --     * every date lies inside 2019-04-19 .. 2022-06-30;
 --     * the first is 2019-04-19 and the last is 2022-06-30;
---     * all 19 dates are distinct, hence chronologically ordered;
+--     * all 20 dates are distinct, hence chronologically ordered;
 --     * row for row, the dates equal what this migration produces.
 --
 --   The last check is exact, not probabilistic. The formula below is
---   deterministic and the 19 dates are distinct and increasing, so a correctly
+--   deterministic and the 20 dates are distinct and increasing, so a correctly
 --   backdated ledger recomputes to precisely its own dates and matches on every
 --   slot. Any deviation aborts. Re-running therefore cannot re-space, shift or
 --   silently bless a history that 008 did not create.
@@ -193,14 +193,14 @@ begin
     -- ------------------------------------------------------------------------
     -- The comparison below is exact rather than probabilistic. A2 has just
     -- recomputed, from the rows as they stand, the date each slot would be
-    -- given. Because the formula is deterministic and the 19 dates are distinct
+    -- given. Because the formula is deterministic and the 20 dates are distinct
     -- and increasing, an already-backdated ledger recomputes to precisely its
     -- own dates — so a clean rerun matches on every slot. Any deviation means
     -- the database is not in the state 008 leaves behind, and it aborts.
     select count(*) into v_n from rb_target;
-    if v_n <> 19 then
+    if v_n <> 20 then
       v_problems := v_problems || format(
-        'demo-1 has %s transaction(s), expected 19', v_n);
+        'demo-1 has %s transaction(s), expected 20', v_n);
     end if;
 
     -- 1. Every demo-1 date must sit inside the agreed window.
@@ -270,8 +270,8 @@ begin
   -- A3c. Fresh branch: checks on the plan, before anything is written
   -- --------------------------------------------------------------------------
   select count(*) into v_n from rb_target;
-  if v_n <> 19 then
-    v_problems := v_problems || format('demo-1 has %s transaction(s), expected 19', v_n);
+  if v_n <> 20 then
+    v_problems := v_problems || format('demo-1 has %s transaction(s), expected 20', v_n);
   end if;
 
   -- Every assigned date must be inside the window.
@@ -379,14 +379,14 @@ begin
       'RIVERBEND 008 aborted, nothing was committed: % demo-1 row(s) dated after 2022-06-30', v_late;
   end if;
 
-  -- Exactly the 19 target rows moved, and no more.
+  -- Exactly the 20 target rows moved, and no more.
   select count(*) into v_changed
     from public.transactions t
     join rb_before b on b.id = t.id
    where t.occurred_on is distinct from b.occurred_on;
-  if v_changed <> 19 then
+  if v_changed <> 20 then
     raise exception
-      'RIVERBEND 008 aborted, nothing was committed: % row(s) changed date, expected 19', v_changed;
+      'RIVERBEND 008 aborted, nothing was committed: % row(s) changed date, expected 20', v_changed;
   end if;
 
   -- Nothing but the date may have moved on any row.
@@ -419,12 +419,12 @@ begin
     from public.transactions t
     join public.customers c on c.id = t.customer_id
    where c.client_ref = 'demo-1';
-  if v_n <> 19 then
+  if v_n <> 20 then
     raise exception
-      'RIVERBEND 008 aborted, nothing was committed: demo-1 holds % transaction(s) after backdating, expected 19', v_n;
+      'RIVERBEND 008 aborted, nothing was committed: demo-1 holds % transaction(s) after backdating, expected 20', v_n;
   end if;
 
-  -- Every date inside the window, and all 19 distinct.
+  -- Every date inside the window, and all 20 distinct.
   select count(*) filter (
            where t.occurred_on < date '2019-04-19' or t.occurred_on > date '2022-06-30'),
          count(distinct t.occurred_on)
@@ -459,7 +459,7 @@ begin
       'RIVERBEND 008 aborted, nothing was committed: bank_accounts row count changed';
   end if;
 
-  raise notice 'RIVERBEND 008 verified: 19 demo-1 rows backdated into 2019-04-19 .. 2022-06-30, all distinct, no other column and no balance touched';
+  raise notice 'RIVERBEND 008 verified: 20 demo-1 rows backdated into 2019-04-19 .. 2022-06-30, all distinct, no other column and no balance touched';
 end;
 $$;
 
