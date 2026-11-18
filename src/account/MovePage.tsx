@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ACCOUNT_IDENTIFIER } from "./accountIds";
 import { useAuth, formatMoney } from "./auth";
 import {
   DatabaseError,
@@ -160,10 +161,12 @@ export default function MovePage() {
             className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-900 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/20"
           >
             <option value="checking">
-              {content.account.accounts.checkingLabel} · {formatMoney(user.balance.checking)}
+              {content.account.accounts.checkingLabel} · {ACCOUNT_IDENTIFIER.checking} ·{" "}
+              {formatMoney(user.balance.checking)}
             </option>
             <option value="savings">
-              {content.account.accounts.savingsLabel} · {formatMoney(user.balance.savings)}
+              {content.account.accounts.savingsLabel} · {ACCOUNT_IDENTIFIER.savings} ·{" "}
+              {formatMoney(user.balance.savings)}
             </option>
           </select>
         </div>
@@ -182,10 +185,12 @@ export default function MovePage() {
             className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-900 outline-none transition-colors focus:border-river-400 focus:ring-2 focus:ring-river-500/20"
           >
             <option value="checking">
-              {content.account.accounts.checkingLabel} · {formatMoney(user.balance.checking)}
+              {content.account.accounts.checkingLabel} · {ACCOUNT_IDENTIFIER.checking} ·{" "}
+              {formatMoney(user.balance.checking)}
             </option>
             <option value="savings">
-              {content.account.accounts.savingsLabel} · {formatMoney(user.balance.savings)}
+              {content.account.accounts.savingsLabel} · {ACCOUNT_IDENTIFIER.savings} ·{" "}
+              {formatMoney(user.balance.savings)}
             </option>
           </select>
         </div>

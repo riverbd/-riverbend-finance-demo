@@ -69,6 +69,13 @@ export type ContentState = {
       allActivitySub: string;
       allActivityFilterLabel: string;
       seeAllBack: string;
+      /** Milestone 8 — promotional card in the Fixed savings activity area. */
+      promoEyebrow: string;
+      promoRate: string;
+      promoBody: string;
+      promoNote: string;
+      /** Separator sitting between an account's name and its identifier. */
+      accountIdSeparator: string;
     };
     statements: {
       heading: string;
@@ -264,6 +271,12 @@ export const defaultContent: ContentState = {
       allActivitySub: "Your complete history — {count} transactions, newest first.",
       allActivityFilterLabel: "Filter by account",
       seeAllBack: "Back to accounts",
+      promoEyebrow: "HIGH-YIELD SAVINGS",
+      promoRate: "18% p.a.",
+      promoBody:
+        "Put your savings to work. Grow your balance with one of our most competitive fixed savings rates, applied to the full term of your deposit.",
+      promoNote: "Illustrative rate. Existing balances and transactions are unchanged.",
+      accountIdSeparator: "·",
       earliestLabel: "Earliest",
     },
     statements: {

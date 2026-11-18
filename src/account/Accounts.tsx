@@ -4,6 +4,8 @@ import { useContent } from "../admin/store";
 import CheckingActivity from "./CheckingActivity";
 import AllActivity from "./AllActivity";
 import Statements from "./Statements";
+import SavingsPromo from "./SavingsPromo";
+import { ACCOUNT_IDENTIFIER } from "./accountIds";
 
 export default function Accounts({ initialView = "list" }: { initialView?: "list" | "all-activity" }) {
   const { user } = useAuth();
@@ -31,9 +33,10 @@ export default function Accounts({ initialView = "list" }: { initialView?: "list
   }
 
   const isSavings = tab === "savings";
+  const activeLabel = isSavings ? a.savingsLabel : a.checkingLabel;
   const activityLabel = a.activityHeading.replace(
     "{account}",
-    tab === "checking" ? a.checkingLabel : a.savingsLabel
+    `${activeLabel} ${a.accountIdSeparator} ${ACCOUNT_IDENTIFIER[tab]}`
   );
 
   return (
@@ -71,7 +74,7 @@ export default function Accounts({ initialView = "list" }: { initialView?: "list
           <p className="mt-1 text-base font-semibold text-slate-900">
             {formatMoney(user.balance.checking)}
           </p>
-          <p className="mt-0.5 text-[10px] text-slate-400">•••• 4218</p>
+          <p className="mt-0.5 text-[10px] text-slate-400">{ACCOUNT_IDENTIFIER.checking}</p>
         </button>
         <button
           onClick={() => setTab("savings")}
@@ -85,9 +88,20 @@ export default function Accounts({ initialView = "list" }: { initialView?: "list
           <p className="mt-1 text-base font-semibold text-slate-900">
             {formatMoney(user.balance.savings)}
           </p>
-          <p className="mt-0.5 text-[10px] text-slate-400">•••• 1147</p>
+          <p className="mt-0.5 text-[10px] text-slate-400">{ACCOUNT_IDENTIFIER.savings}</p>
         </button>
       </div>
+
+      {/* Promotional panel, Fixed savings only, and above the history so the
+          ledger is never mistaken for part of the offer. */}
+      {isSavings && (
+        <SavingsPromo
+          eyebrow={a.promoEyebrow}
+          rate={a.promoRate}
+          body={a.promoBody}
+          note={a.promoNote}
+        />
+      )}
 
       <section>
         <h3 className="text-sm font-semibold text-slate-900">{activityLabel}</h3>
@@ -100,7 +114,7 @@ export default function Accounts({ initialView = "list" }: { initialView?: "list
               </svg>
             </div>
             <p className="mt-3 text-sm font-medium text-slate-900">
-              {a.savingsLabel} activity is locked
+              {a.savingsLabel} {a.accountIdSeparator} {ACCOUNT_IDENTIFIER.savings} activity is locked
             </p>
             <p className="mt-1 text-xs text-slate-500">
               Fixed savings statements are available on request. Contact our customer relations team.

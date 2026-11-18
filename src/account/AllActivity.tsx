@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useContent } from "../admin/store";
 import type { Transaction } from "./types";
 import { TransactionRow, newestFirst } from "./TransactionRow";
+import { accountTitle } from "./accountIds";
 
 /** How many rows the account activity view shows before "See All". */
 export const ACTIVITY_PAGE_SIZE = 10;
@@ -55,8 +56,8 @@ export default function AllActivity({
 
   const tabs: { id: typeof account; label: string; count: number }[] = [
     { id: "all", label: "All", count: counts.all },
-    { id: "checking", label: copy.checkingLabel, count: counts.checking },
-    { id: "savings", label: copy.savingsLabel, count: counts.savings },
+    { id: "checking", label: accountTitle("checking", copy.checkingLabel), count: counts.checking },
+    { id: "savings", label: accountTitle("savings", copy.savingsLabel), count: counts.savings },
   ];
 
   return (

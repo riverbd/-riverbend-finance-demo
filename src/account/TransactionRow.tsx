@@ -1,5 +1,6 @@
 import { formatDateWithYear, formatMoney } from "./format";
 import type { AccountKind, Transaction } from "./types";
+import { accountName, accountTitle } from "./accountIds";
 
 /**
  * One transaction row.
@@ -54,7 +55,7 @@ export function TransactionRow({
             {showAccount && (
               <>
                 <span aria-hidden="true">·</span>
-                <span>{accountLabel(t.account)}</span>
+                <span>{accountTitle(t.account)}</span>
               </>
             )}
             {t.isDemo && (
@@ -80,9 +81,15 @@ export function TransactionRow({
   );
 }
 
-/** The human name of an account, matching the labels used on the account cards. */
+/**
+ * The human name of an account, matching the labels used on the account cards.
+ *
+ * Kept as the plain name for callers that already supply an identifier
+ * separately; `accountTitle` is the version to reach for when an account is
+ * named on its own, because it carries the identifier with it.
+ */
 export function accountLabel(kind: AccountKind): string {
-  return kind === "savings" ? "Fixed savings" : "Checking";
+  return accountName(kind);
 }
 
 /** Category chip colours, kept identical to the existing activity list. */

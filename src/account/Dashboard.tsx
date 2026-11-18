@@ -1,5 +1,6 @@
 import { useAuth, formatMoney, formatDate } from "./auth";
 import { useContent } from "../admin/store";
+import { ACCOUNT_IDENTIFIER } from "./accountIds";
 import {
   IconArrowUpRight,
   IconArrowDownLeft,
@@ -87,7 +88,7 @@ export default function Dashboard({
           <p className="mt-1 text-base font-semibold text-slate-900">
             {formatMoney(user.balance.checking)}
           </p>
-          <p className="mt-0.5 text-[10px] text-slate-400">•••• 4218</p>
+          <p className="mt-0.5 text-[10px] text-slate-400">{ACCOUNT_IDENTIFIER.checking}</p>
         </button>
         <button
           onClick={() => onGoTo("accounts")}
@@ -97,7 +98,7 @@ export default function Dashboard({
           <p className="mt-1 text-base font-semibold text-slate-900">
             {formatMoney(user.balance.savings)}
           </p>
-          <p className="mt-0.5 text-[10px] text-slate-400">•••• 1147</p>
+          <p className="mt-0.5 text-[10px] text-slate-400">{ACCOUNT_IDENTIFIER.savings}</p>
         </button>
       </div>
 

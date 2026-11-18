@@ -13,12 +13,10 @@ import {
   type StatementPeriod,
 } from "./statement";
 import { downloadStatementPdf } from "./statementPdf";
+import { ACCOUNT_IDENTIFIER } from "./accountIds";
 
 /** Masked account identifiers, matching the account cards. */
-const ACCOUNT_NUMBER: Record<AccountKind, string> = {
-  checking: "•••• 4218",
-  savings: "•••• 1147",
-};
+const ACCOUNT_NUMBER: Record<AccountKind, string> = ACCOUNT_IDENTIFIER;
 
 /**
  * Statement download.
@@ -51,6 +49,9 @@ export default function Statements({ onBack }: { onBack: () => void }) {
     if (!valid) return null;
     return buildStatement({
       accountKind: account,
+      // Plain name: the identifier is carried by `accountNumber` and drawn as
+      // its own "Account •••• 4218" line, so adding it here would print the
+      // digits twice on the PDF.
       accountLabel: account === "savings" ? copy.savingsLabel : copy.checkingLabel,
       accountNumber: ACCOUNT_NUMBER[account],
       customerName: user.fullName,

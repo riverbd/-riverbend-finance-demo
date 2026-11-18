@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ACCOUNT_IDENTIFIER } from "./accountIds";
 import { useAuth, formatMoney } from "./auth";
 import { DatabaseError } from "./db";
 import { useContent } from "../admin/store";
@@ -122,7 +123,10 @@ export default function SendPage() {
           </label>
           <div className="mt-2 flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-3">
             <span className="text-sm font-medium text-slate-900">
-              {content.account.accounts.checkingLabel}
+              {content.account.accounts.checkingLabel}{" "}
+              <span className="text-slate-400">
+                {content.account.accounts.accountIdSeparator} {ACCOUNT_IDENTIFIER.checking}
+              </span>
             </span>
             <span className="text-sm font-semibold text-slate-700">
               {formatMoney(user.balance.checking)}
