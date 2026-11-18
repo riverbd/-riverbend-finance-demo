@@ -515,3 +515,108 @@ export async function setAccountStatus(
     );
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Transaction management (migration 008)
+ * ------------------------------------------------------------------------- */
+
+export type AdminTransaction = {
+  id: string;
+  /** The owning customer's stable id, e.g. "demo-1". */
+  clientRef: string;
+  /** The owning customer's display name, for the admin table. */
+  customerName: string;
+  merchant: string;
+  category: string;
+  amount: number;
+  occurredOn: string;
+  accountKind: AccountKind;
+};
+
+/**
+ * Every transaction for every customer, newest first.
+ *
+ * Read through the ordinary table select rather than a function: the admin
+ * panel is a demonstration surface, and the select policy already permits it.
+ * Two selects are merged in memory so every row can be labelled with its owner
+ * and filtered by client_ref.
+ */
+export async function fetchAdminTransactions(): Promise<AdminTransaction[]> {
+  // Two plain selects instead of an embedded `customers!inner(...)` join: the
+  // codebase uses no other embedded resources, and a postgrest join would make
+  // this one screen depend on a relationship shape the rest of the app never
+  // exercises. Merge by customer_id here instead.
+  const [txnResult, customerResult] = await Promise.all([
+    supabase
+      .from("transactions")
+      .select("id, customer_id, client_ref, merchant, category, amount, occurred_on, account_kind")
+      .order("occurred_on", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(2000),
+    supabase.from("customers").select("id, client_ref, full_name"),
+  ]);
+
+  if (txnResult.error) throw adminError(txnResult.error, "Loading transactions");
+  if (customerResult.error) throw adminError(customerResult.error, "Loading customers");
+
+  type TxnRow = {
+    id: string;
+    customer_id: string;
+    client_ref: string | null;
+    merchant: string;
+    category: string;
+    amount: string | number;
+    occurred_on: string;
+    account_kind: AccountKind;
+  };
+  type CustomerRow = { id: string; client_ref: string; full_name: string };
+
+  const byId = new Map<string, CustomerRow>(
+    ((customerResult.data ?? []) as CustomerRow[]).map((c) => [c.id, c])
+  );
+
+  return ((txnResult.data ?? []) as unknown as TxnRow[]).map(
+    (row): AdminTransaction => {
+      const owner = byId.get(row.customer_id);
+      return {
+        id: row.id,
+        // The row's own client_ref is the transaction's seed label; when it is
+        // null (runtime rows) fall back to the owner's, so every row can be
+        // identified and filtered.
+        clientRef: owner?.client_ref ?? row.client_ref ?? "",
+        customerName: owner?.full_name ?? "Unknown customer",
+        merchant: row.merchant,
+        category: row.category,
+        amount:
+          typeof row.amount === "number" ? row.amount : Number.parseFloat(row.amount),
+        occurredOn: row.occurred_on,
+        accountKind: row.account_kind,
+      };
+    }
+  );
+}
+
+/**
+ * Delete one transaction.
+ *
+ * Goes through the passphrase-gated function from migration 008: the
+ * transactions table deliberately has no DELETE policy, so this is the only
+ * path, and the function never touches bank_accounts — a deletion cannot move a
+ * customer's checking or fixed-savings balance.
+ */
+export async function deleteAdminTransaction(
+  passphrase: string,
+  id: string
+): Promise<void> {
+  const { data, error } = await supabase.rpc("riverbend_admin_delete_transaction", {
+    p_passphrase: passphrase,
+    p_id: id,
+  });
+
+  if (error) throw adminError(error, "Deleting the transaction");
+  if (Number(data ?? 0) === 0) {
+    throw new DatabaseError(
+      "Deleting the transaction failed: it may already have been deleted."
+    );
+  }
+}

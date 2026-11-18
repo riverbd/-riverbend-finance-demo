@@ -20,7 +20,8 @@ import {
   setContactMessageRead,
 } from "./db";
 import type { ContactMessage } from "./db";
-import type { AdminCustomer, AdminVerification } from "./db";
+import { deleteAdminTransaction, fetchAdminTransactions } from "./db";
+import type { AdminTransaction, AdminCustomer, AdminVerification } from "./db";
 
 type Tab =
   | "brand"
@@ -39,6 +40,7 @@ type Tab =
   | "users"
   | "balances"
   | "cardholders"
+  | "transactions"
   | "messages"
   | "data";
 
@@ -59,6 +61,7 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "users", label: "Users" },
   { id: "balances", label: "Balances" },
   { id: "cardholders", label: "Cardholders" },
+  { id: "transactions", label: "Transactions" },
   { id: "messages", label: "Messages" },
   { id: "data", label: "Data" },
 ];
@@ -249,6 +252,7 @@ export default function AdminDashboard() {
             {active === "users" && <UsersEditor />}
             {active === "balances" && <BalancesEditor />}
             {active === "cardholders" && <CardholdersEditor />}
+            {active === "transactions" && <TransactionsTab />}
             {active === "messages" && <MessagesTab />}
             {active === "data" && <DataTab />}
           </div>
@@ -1426,6 +1430,204 @@ function UsersEditor() {
  * function (see migration 005). Unread messages are visually distinct and are
  * counted in the header, so a new enquiry cannot be missed.
  */
+/* ---------------- Transactions ---------------- */
+
+/**
+ * The customer filter. "all" is the default so the admin sees the whole ledger
+ * first; the two demo customers are offered by name *and* client_ref, because
+ * client_ref is the stable identifier and the name is editable.
+ */
+type CustomerFilter = "all" | "demo-1" | "demo-2";
+
+const CUSTOMER_FILTERS: { id: CustomerFilter; label: string }[] = [
+  { id: "all", label: "All customers" },
+  { id: "demo-1", label: "Christopher Williams (demo-1)" },
+  { id: "demo-2", label: "Jordan Reyes (demo-2)" },
+];
+
+function TransactionsTab() {
+  const [rows, setRows] = useState<AdminTransaction[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [filter, setFilter] = useState<CustomerFilter>("all");
+
+  const load = useCallback(async () => {
+    try {
+      const list = await fetchAdminTransactions();
+      setRows(list);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not load transactions.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const remove = async (t: AdminTransaction) => {
+    setBusy(t.id);
+    setError(null);
+    setNotice(null);
+    try {
+      await deleteAdminTransaction(ADMIN_PASSWORD, t.id);
+      setConfirming(null);
+      // Re-read rather than splice locally: the deletion has to be shown as the
+      // database now holds it, not as the browser would like it to be.
+      await load();
+      setNotice(`Deleted “${t.merchant}” (${formatMoney(t.amount)}). Balances are unchanged.`);
+    } catch (e) {
+      setError(e instanceof DatabaseError ? e.message : "Could not delete the transaction.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const visible = filter === "all" ? rows : rows.filter((r) => r.clientRef === filter);
+
+  return (
+    <div className="space-y-5">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight text-slate-900">Transactions</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Every customer&rsquo;s transaction history. Deleting a transaction removes it from that
+            customer&rsquo;s history; it never changes a stored balance.
+          </p>
+        </div>
+        <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+          {loading ? "Loading…" : `${visible.length} shown`}
+        </span>
+      </header>
+
+      {error && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+          {error}
+        </div>
+      )}
+      {notice && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
+          {notice}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label
+          htmlFor="txn-customer"
+          className="text-[11px] font-semibold uppercase tracking-wide text-slate-500"
+        >
+          Customer
+        </label>
+        <select
+          id="txn-customer"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value as CustomerFilter)}
+          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700"
+        >
+          {CUSTOMER_FILTERS.map((f) => (
+            <option key={f.id} value={f.id}>
+              {f.label}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={() => void load()}
+          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+        >
+          Refresh
+        </button>
+      </div>
+
+      {!loading && visible.length === 0 && (
+        <p className="rounded-xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-500">
+          No transactions for this customer.
+        </p>
+      )}
+
+      <div className="space-y-2">
+        {visible.map((t) => (
+          <article
+            key={t.id}
+            className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="break-words text-sm font-medium text-slate-900">{t.merchant}</p>
+                <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-slate-500">
+                  <span className="font-semibold text-slate-600">{t.customerName}</span>
+                  <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                    {t.clientRef || "unknown"}
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span>{t.category}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{formatTransactionDate(t.occurredOn)}</span>
+                  <span aria-hidden="true">·</span>
+                  <span className="capitalize">
+                    {t.accountKind === "savings" ? "Fixed savings" : "Checking"}
+                  </span>
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <p
+                  className={`shrink-0 text-sm font-semibold tabular-nums ${
+                    t.amount >= 0 ? "text-emerald-600" : "text-slate-900"
+                  }`}
+                >
+                  {t.amount >= 0 ? "+" : ""}
+                  {formatMoney(t.amount)}
+                </p>
+
+                {confirming === t.id ? (
+                  <>
+                    <button
+                      onClick={() => void remove(t)}
+                      disabled={busy === t.id}
+                      className="rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-60"
+                    >
+                      {busy === t.id ? "Deleting…" : "Confirm delete"}
+                    </button>
+                    <button
+                      onClick={() => setConfirming(null)}
+                      className="rounded-xl px-2 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-700"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => setConfirming(t.id)}
+                    className="rounded-xl border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Transaction dates are day-only in the database, so no clock is shown. */
+function formatTransactionDate(iso: string) {
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 function MessagesTab() {
   const [messages, setMessages] = useState<ContactMessage[]>([]);
   const [loading, setLoading] = useState(true);
