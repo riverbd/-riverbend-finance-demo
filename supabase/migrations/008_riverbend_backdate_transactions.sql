@@ -20,9 +20,13 @@
 -- WHAT IS NOT CHANGED
 --   * No transaction is inserted. The ledger keeps exactly the rows it has.
 --   * No transaction is deleted here.
---   * bank_accounts is never read or written. Balances are stored values that
---     are not derived from the ledger, so re-dating rows cannot move them.
---   * demo-2 is not touched in any way.
+--   * bank_accounts is never written. Balances are stored values that are not
+--     derived from the ledger, so re-dating rows cannot move them. They are
+--     snapshotted before the update and compared after it, so "unchanged" is
+--     proven rather than asserted.
+--   * demo-2 is out of scope and is excluded at the UPDATE itself, which joins
+--     to customers and requires client_ref = 'demo-1'. Its history and its
+--     balances are not modified.
 --
 -- WHO IS AFFECTED
 --   Only the customer whose client_ref is 'demo-1'. The customer is identified
@@ -119,6 +123,17 @@ select t.id,
        t.occurred_on,
        t.created_at
   from public.transactions t;
+
+-- Balances live in a different table and this migration never writes to it, but
+-- snapshot them anyway so the post-check can prove they are untouched rather
+-- than merely claim it.
+drop table if exists rb_balances_before;
+create temporary table rb_balances_before on commit preserve rows as
+select a.id,
+       a.customer_id,
+       a.kind,
+       a.balance
+  from public.bank_accounts a;
 
 -- ----------------------------------------------------------------------------
 -- A2. The rows to backdate, and the date each one receives
@@ -320,10 +335,18 @@ begin
     return;
   end if;
 
+  -- The join to customers is redundant on purpose. rb_newdate is already built
+  -- only from demo-1 rows, so this predicate cannot change which rows the
+  -- statement selects — it is here so that the restriction is visible and
+  -- checkable at the UPDATE itself, rather than being a property of a temporary
+  -- table several steps up the file. demo-2 is excluded twice over.
   update public.transactions t
      set occurred_on = n.new_date
-    from rb_newdate n
-   where t.id = n.id;
+    from rb_newdate n,
+         public.customers c
+   where t.id = n.id
+     and c.id = t.customer_id
+     and c.client_ref = 'demo-1';
 end;
 $$;
 
@@ -337,8 +360,9 @@ declare
   v_other     int;
   v_before    int;
   v_after     int;
-  v_d2_before int;
-  v_d2_after  int;
+  v_n         int;
+  v_bad       int;
+  v_distinct  int;
 begin
   if coalesce(current_setting('riverbend008.applied', true), 'false') = 'true' then
     return;
@@ -389,20 +413,53 @@ begin
       'RIVERBEND 008 aborted, nothing was committed: row count went % -> %', v_before, v_after;
   end if;
 
-  -- demo-2 is untouched, in count and in content.
-  select count(*) into v_d2_before
-    from rb_before b join public.customers c on c.id = b.customer_id
-   where c.client_ref = 'demo-2';
-  select count(*) into v_d2_after
-    from public.transactions t join public.customers c on c.id = t.customer_id
-   where c.client_ref = 'demo-2'
-     and t.id in (select id from rb_before);
-  if v_d2_after <> v_d2_before then
+  -- Re-check the result against the ledger itself, not against the plan. A3
+  -- proved what the plan should do; this proves what the database now holds.
+  select count(*) into v_n
+    from public.transactions t
+    join public.customers c on c.id = t.customer_id
+   where c.client_ref = 'demo-1';
+  if v_n <> 19 then
     raise exception
-      'RIVERBEND 008 aborted, nothing was committed: demo-2 changed % -> %', v_d2_before, v_d2_after;
+      'RIVERBEND 008 aborted, nothing was committed: demo-1 holds % transaction(s) after backdating, expected 19', v_n;
   end if;
 
-  raise notice 'RIVERBEND 008 verified: 19 rows backdated into 2019-04-19 .. 2022-06-30, no other column touched';
+  -- Every date inside the window, and all 19 distinct.
+  select count(*) filter (
+           where t.occurred_on < date '2019-04-19' or t.occurred_on > date '2022-06-30'),
+         count(distinct t.occurred_on)
+    into v_bad, v_distinct
+    from public.transactions t
+    join public.customers c on c.id = t.customer_id
+   where c.client_ref = 'demo-1';
+  if v_bad > 0 then
+    raise exception
+      'RIVERBEND 008 aborted, nothing was committed: % demo-1 row(s) landed outside 2019-04-19 .. 2022-06-30', v_bad;
+  end if;
+  if v_distinct <> v_n then
+    raise exception
+      'RIVERBEND 008 aborted, nothing was committed: only % distinct date(s) across % demo-1 row(s)', v_distinct, v_n;
+  end if;
+
+  -- Balances must be exactly as they were. The migration does not touch
+  -- bank_accounts; this proves it.
+  select count(*) into v_bad
+    from public.bank_accounts a
+    left join rb_balances_before b on b.id = a.id
+   where b.id is null
+      or a.balance is distinct from b.balance
+      or a.kind is distinct from b.kind
+      or a.customer_id is distinct from b.customer_id;
+  if v_bad > 0 then
+    raise exception
+      'RIVERBEND 008 aborted, nothing was committed: % bank account(s) changed', v_bad;
+  end if;
+  if (select count(*) from public.bank_accounts) <> (select count(*) from rb_balances_before) then
+    raise exception
+      'RIVERBEND 008 aborted, nothing was committed: bank_accounts row count changed';
+  end if;
+
+  raise notice 'RIVERBEND 008 verified: 19 demo-1 rows backdated into 2019-04-19 .. 2022-06-30, all distinct, no other column and no balance touched';
 end;
 $$;
 
@@ -412,6 +469,7 @@ $$;
 drop table if exists rb_newdate;
 drop table if exists rb_target;
 drop table if exists rb_before;
+drop table if exists rb_balances_before;
 
 -- ----------------------------------------------------------------------------
 -- B1. Admin: delete a single transaction
