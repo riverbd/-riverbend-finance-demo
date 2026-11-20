@@ -150,29 +150,19 @@ export default function Accounts({ initialView = "list" }: { initialView?: "list
 
       <section>
         <h3 className="text-sm font-semibold text-slate-900">{activityLabel}</h3>
-        {isSavings ? (
-          <div className="mt-2 rounded-2xl border border-slate-200 bg-white p-6 text-center">
-            <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-500">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
-                <rect x="3" y="11" width="18" height="11" rx="2" />
-                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-              </svg>
-            </div>
-            <p className="mt-3 text-sm font-medium text-slate-900">
-              {a.savingsLabel} {a.accountIdSeparator} {ACCOUNT_IDENTIFIER.savings} activity is locked
-            </p>
-            <p className="mt-1 text-xs text-slate-500">
-              Fixed savings statements are available on request. Contact our customer relations team.
-            </p>
-          </div>
-        ) : (
-          <CheckingActivity
-            transactions={user.transactions}
-            memberSince={user.memberSince}
-            copy={a}
-            onSeeAll={() => setShowAllActivity(true)}
-          />
-        )}
+        {/*
+          Both accounts now page through their own ledger with the same month
+          navigation. The Fixed savings panel used to stop here with a lock
+          notice in place of any history; the lock itself lives in the Move flow
+          and in the database, not in whether this list is shown.
+        */}
+        <CheckingActivity
+          transactions={user.transactions}
+          memberSince={user.memberSince}
+          copy={a}
+          onSeeAll={() => setShowAllActivity(true)}
+          account={tab}
+        />
       </section>
     </div>
   );

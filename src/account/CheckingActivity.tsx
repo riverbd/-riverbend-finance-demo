@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatDate } from "./auth";
-import type { Transaction } from "./types";
+import type { Transaction, AccountKind } from "./types";
 import { ACTIVITY_PAGE_SIZE } from "./AllActivity";
 import { TransactionRow } from "./TransactionRow";
 import {
@@ -56,6 +56,7 @@ export default function CheckingActivity({
   memberSince,
   copy,
   onSeeAll,
+  account = "checking",
 }: {
   transactions: Transaction[];
   /** ISO date the account was opened — the earliest month we may page to. */
@@ -63,16 +64,33 @@ export default function CheckingActivity({
   copy: ActivityCopy;
   /** Opens the combined all-activity view. */
   onSeeAll: () => void;
+  /**
+   * Which account's ledger to page through. Defaults to checking, which is
+   * where this list has always been used; the Fixed savings tab now needs the
+   * same month navigation over its own rows rather than a lock notice in place
+   * of any history at all.
+   */
+  account?: AccountKind;
 }) {
   const today = todayISO();
   const earliest = monthOf(memberSince);
 
-  // Newest transaction decides where the page opens, so a demo account with a
-  // gap shows its latest real activity rather than an empty recent month.
+  // Newest transaction decides where the page opens, so an account with a gap
+  // shows its latest real activity rather than an empty recent month.
+  //
+  // Scoped to this account on purpose. `transactions` holds the whole ledger,
+  // and the two accounts do not end at the same date: Fixed savings has five
+  // rows ending in June 2021 while Checking runs to June 2022. Taking the
+  // newest date from the combined ledger opened the savings list on a month
+  // that could never contain a savings row — an empty history with the
+  // navigator claiming otherwise.
   const newest = useMemo(
     () =>
-      transactions.reduce<string>((acc, t) => (t.date > acc ? t.date : acc), ""),
-    [transactions]
+      transactions.reduce<string>(
+        (acc, t) => (t.account === account && t.date > acc ? t.date : acc),
+        ""
+      ),
+    [transactions, account]
   );
 
   // Never past the current month, and never past the newest transaction: a
@@ -104,9 +122,9 @@ export default function CheckingActivity({
   const rows = useMemo(
     () =>
       transactions
-        .filter((t) => t.account === "checking" && inWindow(t.date, window))
+        .filter((t) => t.account === account && inWindow(t.date, window))
         .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
-    [transactions, window]
+    [transactions, window, account]
   );
 
   // Show at most a page of rows here; "See All" opens the full, unpaginated
