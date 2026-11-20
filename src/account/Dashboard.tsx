@@ -1,6 +1,7 @@
-import { useAuth, formatMoney, formatDate } from "./auth";
+import { useAuth, formatMoney } from "./auth";
 import { useContent } from "../admin/store";
 import { ACCOUNT_IDENTIFIER } from "./accountIds";
+import RecentActivityRow from "./RecentActivityRow";
 import {
   IconArrowUpRight,
   IconArrowDownLeft,
@@ -141,41 +142,16 @@ export default function Dashboard({
             {dash.recentSeeAll}
           </button>
         </div>
-        <div className="mt-2 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        <div
+          className="mt-2 overflow-hidden rounded-2xl border border-slate-200 bg-white"
+          data-testid="home-recent-list"
+        >
           {recent.map((t, i) => (
-            <div
+            <RecentActivityRow
               key={t.id}
-              className={`flex items-center justify-between px-4 py-3 ${
-                i !== recent.length - 1 ? "border-b border-slate-100" : ""
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <div
-                  className={`flex h-9 w-9 items-center justify-center rounded-full text-[11px] font-bold ${categoryColor(t.category)}`}
-                >
-                  {t.merchant[0]}
-                </div>
-                <div className="min-w-0">
-                  {/* A transfer now carries up to six recipient details, so the
-                      description can be long. The wrapping utilities keep it inside the
-                      row instead of pushing the amount off the edge on a phone. */}
-                  <p className="whitespace-pre-line break-words text-sm font-medium text-slate-900">
-                    {t.merchant}
-                  </p>
-                  <p className="text-[11px] text-slate-500">
-                    {t.category} · {formatDate(t.date)}
-                  </p>
-                </div>
-              </div>
-              <p
-                className={`text-sm font-semibold ${
-                  t.amount >= 0 ? "text-emerald-600" : "text-slate-900"
-                }`}
-              >
-                {t.amount >= 0 ? "+" : ""}
-                {formatMoney(t.amount)}
-              </p>
-            </div>
+              transaction={t}
+              divided={i !== recent.length - 1}
+            />
           ))}
         </div>
       </section>
@@ -183,19 +159,6 @@ export default function Dashboard({
   );
 }
 
-function categoryColor(c: string) {
-  const map: Record<string, string> = {
-    Income: "bg-emerald-100 text-emerald-700",
-    Food: "bg-amber-100 text-amber-700",
-    Groceries: "bg-violet-100 text-violet-700",
-    Transfer: "bg-river-100 text-river-700",
-    Subscriptions: "bg-rose-100 text-rose-700",
-    Travel: "bg-sky-100 text-sky-700",
-    Health: "bg-pink-100 text-pink-700",
-    Software: "bg-indigo-100 text-indigo-700",
-  };
-  return map[c] ?? "bg-slate-100 text-slate-700";
-}
 
 function IconCardsIcon(props: React.SVGProps<SVGSVGElement>) {
   return (

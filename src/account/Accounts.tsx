@@ -5,6 +5,7 @@ import CheckingActivity from "./CheckingActivity";
 import AllActivity from "./AllActivity";
 import Statements from "./Statements";
 import SavingsPromo from "./SavingsPromo";
+import RecentActivityRow from "./RecentActivityRow";
 import { ACCOUNT_IDENTIFIER } from "./accountIds";
 
 export default function Accounts({ initialView = "list" }: { initialView?: "list" | "all-activity" }) {
@@ -33,6 +34,17 @@ export default function Accounts({ initialView = "list" }: { initialView?: "list
   }
 
   const isSavings = tab === "savings";
+
+  /**
+   * The five most recent transactions for the selected account, across the
+   * whole history — deliberately independent of the month/period the activity
+   * section is filtered to. A customer on June 2022 should still see that they
+   * have a history, even when that month holds a single row.
+   */
+  const accountTransactions = user.transactions.filter((t) => t.account === tab);
+  const newest = [...accountTransactions]
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+    .slice(0, 5);
   const activeLabel = isSavings ? a.savingsLabel : a.checkingLabel;
   const activityLabel = a.activityHeading.replace(
     "{account}",
@@ -103,6 +115,38 @@ export default function Accounts({ initialView = "list" }: { initialView?: "list
           contact={a.promoContact}
         />
       )}
+
+      {/* Recent activity preview: five newest, newest first, regardless of the
+          month selected below. The filtered section that follows is untouched. */}
+      <section>
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-slate-900">{a.recentHeading}</h3>
+          <button
+            type="button"
+            onClick={() => setShowAllActivity(true)}
+            data-testid="accounts-recent-see-all"
+            className="text-xs font-medium text-river-700 hover:text-river-800"
+          >
+            {a.seeAll}
+          </button>
+        </div>
+        <div
+          className="mt-2 overflow-hidden rounded-2xl border border-slate-200 bg-white"
+          data-testid="accounts-recent-list"
+        >
+          {newest.length === 0 ? (
+            <p className="px-4 py-6 text-center text-sm text-slate-500">{a.recentEmpty}</p>
+          ) : (
+            newest.map((t, i) => (
+              <RecentActivityRow
+                key={t.id}
+                transaction={t}
+                divided={i !== newest.length - 1}
+              />
+            ))
+          )}
+        </div>
+      </section>
 
       <section>
         <h3 className="text-sm font-semibold text-slate-900">{activityLabel}</h3>

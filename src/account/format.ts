@@ -14,9 +14,24 @@ export function formatMoney(n: number) {
   });
 }
 
+/**
+ * A short date, e.g. "Jun 30".
+ *
+ * `timeZone: "UTC"` is not cosmetic and must not be removed. A date-only string
+ * such as "2022-06-30" is parsed by `Date` as UTC midnight; formatting that in
+ * the viewer's local zone renders the previous day for anyone west of UTC. That
+ * is exactly how a real 30 June fee was displayed as "Jun 29" on the homepage —
+ * a phantom date that existed nowhere in the ledger. Formatting in UTC keeps
+ * the rendered day equal to the stored day, everywhere.
+ */
 export function formatDate(iso: string) {
   const d = new Date(iso);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 /**

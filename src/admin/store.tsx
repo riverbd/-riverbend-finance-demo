@@ -78,6 +78,9 @@ export type ContentState = {
       promoContact: string;
       /** Separator sitting between an account's name and its identifier. */
       accountIdSeparator: string;
+      /** Milestone 10 — the five-row preview above the monthly activity. */
+      recentHeading: string;
+      recentEmpty: string;
     };
     statements: {
       heading: string;
@@ -280,6 +283,8 @@ export const defaultContent: ContentState = {
       promoNote: "Illustrative rate. Existing balances and transactions are unchanged.",
       promoContact: "Call your account manager for more details.",
       accountIdSeparator: "·",
+      recentHeading: "Recent activity",
+      recentEmpty: "No transactions on this account yet.",
       earliestLabel: "Earliest",
     },
     statements: {
